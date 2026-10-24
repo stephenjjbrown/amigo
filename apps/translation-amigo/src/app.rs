@@ -12,7 +12,7 @@ use eframe::egui::{
     Response, RichText, ScrollArea, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 
-use crate::theme::Palette;
+use crate::theme::{card_frame, inset_frame, panel_frame, semibold, Palette, RADIUS, TYPE};
 
 const AUTO_TRANSLATE_DELAY: f64 = 0.85;
 const MAX_CONTENT_WIDTH: f32 = 1240.0;
@@ -963,8 +963,7 @@ impl TranslationAmigoApp {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("Translation Amigo")
-                    .size(13.0)
-                    .strong()
+                    .font(semibold(TYPE.heading))
                     .color(palette.text_secondary),
             );
 
@@ -980,7 +979,7 @@ impl TranslationAmigoApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if text_button(ui, "Settings", palette).clicked() {
+                if secondary_button(ui, "Settings", palette).clicked() {
                     open_settings = true;
                 }
             });
@@ -1003,88 +1002,88 @@ impl TranslationAmigoApp {
         let mut edited = false;
         let mut clear_requested = false;
 
-        Frame::new()
-            .fill(palette.surface)
-            .stroke(Stroke::new(1.0_f32, palette.border))
-            .corner_radius(CornerRadius::same(16))
-            .show(ui, |ui| {
-                ui.set_width(width);
-                ui.set_max_width(width);
-                ui.set_height(height);
-                ui.set_max_height(height);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::ZERO;
+        panel_frame(palette).show(ui, |ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
+            ui.set_height(height);
+            ui.set_max_height(height);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
 
-                    pane_header(ui, width, "Source", characters, over_limit, palette);
-                    hairline(ui, palette);
+                pane_header(ui, width, "Source", characters, over_limit, palette);
+                hairline(ui, palette);
 
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(width, body_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ScrollArea::vertical()
-                                .id_salt("source_scroll")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.set_max_width(width);
-                                    let response = ui.add(
-                                        TextEdit::multiline(&mut source_text)
-                                            .id(Id::new("source_text"))
-                                            .frame(false)
-                                            .desired_width((width - 44.0).max(40.0))
-                                            .desired_rows(rows)
-                                            .hint_text("Type or paste text to translate…")
-                                            .font(FontId::proportional(15.5))
-                                            .margin(Margin {
-                                                left: 16,
-                                                right: 16,
-                                                top: 12,
-                                                bottom: 12,
-                                            }),
-                                    );
-
-                                    if focus_source {
-                                        response.request_focus();
-                                        focus_source = false;
-                                    }
-                                    if response.changed() {
-                                        edited = true;
-                                    }
-                                });
-                        },
-                    );
-
-                    hairline(ui, palette);
-
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(width, 44.0),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            ui.add_space(12.0);
-                            if over_limit {
-                                ui.label(
-                                    RichText::new("Too long for one request")
-                                        .size(11.5)
-                                        .color(palette.danger),
+                ui.allocate_ui_with_layout(
+                    Vec2::new(width, body_height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ScrollArea::vertical()
+                            .id_salt("source_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_max_width(width);
+                                let response = ui.add(
+                                    TextEdit::multiline(&mut source_text)
+                                        .id(Id::new("source_text"))
+                                        .frame(false)
+                                        .desired_width((width - 44.0).max(40.0))
+                                        .desired_rows(rows)
+                                        .hint_text("Type or paste text to translate…")
+                                        .font(FontId::proportional(TYPE.title))
+                                        .margin(Margin {
+                                            left: 16,
+                                            right: 16,
+                                            top: 12,
+                                            bottom: 12,
+                                        }),
                                 );
-                            } else if width >= 260.0 {
-                                let hint = if cfg!(target_os = "macos") {
-                                    "Cmd+Enter to translate"
-                                } else {
-                                    "Ctrl+Enter to translate"
-                                };
-                                ui.label(RichText::new(hint).size(11.0).color(palette.text_faint));
-                            }
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.add_space(8.0);
-                                if text_button(ui, "Clear", palette).clicked() {
-                                    clear_requested = true;
+
+                                if focus_source {
+                                    response.request_focus();
+                                    focus_source = false;
+                                }
+                                if response.changed() {
+                                    edited = true;
                                 }
                             });
-                        },
-                    );
-                });
+                    },
+                );
+
+                hairline(ui, palette);
+
+                ui.allocate_ui_with_layout(
+                    Vec2::new(width, 44.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.add_space(12.0);
+                        if over_limit {
+                            ui.label(
+                                RichText::new("Too long for one request")
+                                    .size(TYPE.small)
+                                    .color(palette.danger),
+                            );
+                        } else if width >= 260.0 {
+                            let hint = if cfg!(target_os = "macos") {
+                                "Cmd+Enter to translate"
+                            } else {
+                                "Ctrl+Enter to translate"
+                            };
+                            ui.label(
+                                RichText::new(hint)
+                                    .size(TYPE.small)
+                                    .color(palette.text_faint),
+                            );
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add_space(8.0);
+                            if secondary_button(ui, "Clear", palette).clicked() {
+                                clear_requested = true;
+                            }
+                        });
+                    },
+                );
             });
+        });
 
         self.source_text = source_text;
         self.focus_source = focus_source;
@@ -1132,7 +1131,7 @@ impl TranslationAmigoApp {
                 |ui| {
                     ui.label(
                         RichText::new("Translations")
-                            .size(13.0)
+                            .size(TYPE.heading)
                             .strong()
                             .color(palette.text),
                     );
@@ -1147,14 +1146,14 @@ impl TranslationAmigoApp {
                 result_card(ui, palette, |ui| {
                     ui.label(
                         RichText::new("No translation providers")
-                            .size(13.5)
+                            .size(TYPE.heading)
                             .strong()
                             .color(palette.text),
                     );
                     ui.add_space(2.0);
                     ui.label(
                         RichText::new("Add DeepL or Ollama above to start translating.")
-                            .size(12.0)
+                            .size(TYPE.body)
                             .color(palette.text_muted),
                     );
                 });
@@ -1211,18 +1210,28 @@ impl TranslationAmigoApp {
         Frame::new()
             .fill(palette.danger_soft)
             .stroke(Stroke::new(1.0_f32, palette.danger_border))
-            .corner_radius(CornerRadius::same(12))
+            .corner_radius(CornerRadius::same(RADIUS.md))
             .inner_margin(Margin::symmetric(14, 9))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("!").size(13.0).strong().color(palette.danger));
-                    ui.add(
-                        Label::new(RichText::new(&message).size(12.0).color(palette.danger)).wrap(),
+                    ui.label(
+                        RichText::new("!")
+                            .size(TYPE.heading)
+                            .strong()
+                            .color(palette.danger),
                     );
-                    if actionable && text_button(ui, "Settings", palette).clicked() {
+                    ui.add(
+                        Label::new(
+                            RichText::new(&message)
+                                .size(TYPE.body)
+                                .color(palette.danger),
+                        )
+                        .wrap(),
+                    );
+                    if actionable && secondary_button(ui, "Settings", palette).clicked() {
                         settings = true;
                     }
-                    if text_button(ui, "Dismiss", palette).clicked() {
+                    if secondary_button(ui, "Dismiss", palette).clicked() {
                         dismiss = true;
                     }
                 });
@@ -1251,7 +1260,7 @@ impl TranslationAmigoApp {
                 .checkbox(
                     &mut auto,
                     RichText::new("Auto-translate")
-                        .size(12.5)
+                        .size(TYPE.body)
                         .color(palette.text_secondary),
                 )
                 .changed()
@@ -1357,7 +1366,7 @@ impl TranslationAmigoApp {
                 Frame::new()
                     .fill(palette.surface)
                     .stroke(Stroke::new(1.0_f32, palette.border_strong))
-                    .corner_radius(CornerRadius::same(18))
+                    .corner_radius(CornerRadius::same(RADIUS.lg))
                     .inner_margin(Margin::same(20)),
             )
             .show(ctx, |ui| {
@@ -1367,8 +1376,7 @@ impl TranslationAmigoApp {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Settings")
-                            .size(15.0)
-                            .strong()
+                            .font(semibold(TYPE.title))
                             .color(palette.text),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1386,17 +1394,14 @@ impl TranslationAmigoApp {
 
                         ui.label(
                             RichText::new("DEEPL ACCOUNT")
-                                .size(9.5)
+                                .size(TYPE.micro)
                                 .strong()
                                 .color(palette.text_faint),
                         );
                         ui.add_space(2.0);
 
                         if signing_in {
-                            Frame::new()
-                                .fill(palette.surface_muted)
-                                .stroke(Stroke::new(1.0_f32, palette.border))
-                                .corner_radius(CornerRadius::same(11))
+                            inset_frame(palette)
                                 .inner_margin(Margin::symmetric(12, 10))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
@@ -1408,7 +1413,7 @@ impl TranslationAmigoApp {
                                         ui.vertical(|ui| {
                                             ui.label(
                                                 RichText::new("Waiting for your browser")
-                                                    .size(12.5)
+                                                    .size(TYPE.body)
                                                     .strong()
                                                     .color(palette.text),
                                             );
@@ -1416,7 +1421,7 @@ impl TranslationAmigoApp {
                                                 RichText::new(
                                                     "Complete the DeepL sign-in, then come back here.",
                                                 )
-                                                .size(11.0)
+                                                .size(TYPE.small)
                                                 .color(palette.text_faint),
                                             );
                                         });
@@ -1426,20 +1431,17 @@ impl TranslationAmigoApp {
                             ui.add_space(4.0);
                             let button = Button::new(
                                 RichText::new("Cancel sign-in")
-                                    .size(12.0)
+                                    .size(TYPE.body)
                                     .color(palette.text),
                             )
                             .fill(palette.surface)
                             .stroke(Stroke::new(1.0_f32, palette.border_strong))
-                            .corner_radius(CornerRadius::same(8));
+                            .corner_radius(CornerRadius::same(RADIUS.sm));
                             if ui.add(button).clicked() {
                                 cancel_sign_in = true;
                             }
                         } else if signed_in {
-                            Frame::new()
-                                .fill(palette.surface_muted)
-                                .stroke(Stroke::new(1.0_f32, palette.border))
-                                .corner_radius(CornerRadius::same(11))
+                            inset_frame(palette)
                                 .inner_margin(Margin::symmetric(12, 10))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
@@ -1455,7 +1457,7 @@ impl TranslationAmigoApp {
                                         ui.vertical(|ui| {
                                             ui.label(
                                                 RichText::new("Signed in with DeepL")
-                                                    .size(12.5)
+                                                    .size(TYPE.body)
                                                     .strong()
                                                     .color(palette.text),
                                             );
@@ -1463,7 +1465,7 @@ impl TranslationAmigoApp {
                                                 RichText::new(
                                                     "Connected through DeepL's MCP service.",
                                                 )
-                                                .size(11.0)
+                                                .size(TYPE.small)
                                                 .color(palette.text_faint),
                                             );
                                         });
@@ -1471,7 +1473,7 @@ impl TranslationAmigoApp {
                                 });
 
                             ui.add_space(4.0);
-                            if danger_text_button(ui, "Sign out", palette).clicked() {
+                            if danger_secondary_button(ui, "Sign out", palette).clicked() {
                                 sign_out = true;
                             }
                         } else {
@@ -1497,7 +1499,7 @@ impl TranslationAmigoApp {
 
                         ui.label(
                             RichText::new("OLLAMA")
-                                .size(9.5)
+                                .size(TYPE.micro)
                                 .strong()
                                 .color(palette.text_faint),
                         );
@@ -1521,14 +1523,11 @@ impl TranslationAmigoApp {
                         if ollama_checking {
                             ui.label(
                                 RichText::new("Checking for a local Ollama server…")
-                                    .size(11.5)
+                                    .size(TYPE.small)
                                     .color(palette.text_muted),
                             );
                         } else {
-                            Frame::new()
-                                .fill(palette.surface_muted)
-                                .stroke(Stroke::new(1.0_f32, palette.border))
-                                .corner_radius(CornerRadius::same(11))
+                            inset_frame(palette)
                                 .inner_margin(Margin::symmetric(12, 10))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
@@ -1552,7 +1551,7 @@ impl TranslationAmigoApp {
                                                 } else {
                                                     "Ollama is not running"
                                                 })
-                                                .size(12.5)
+                                                .size(TYPE.body)
                                                 .strong()
                                                 .color(palette.text),
                                             );
@@ -1571,7 +1570,7 @@ impl TranslationAmigoApp {
                                             };
                                             ui.label(
                                                 RichText::new(detail)
-                                                    .size(11.0)
+                                                    .size(TYPE.small)
                                                     .color(palette.text_faint),
                                             );
                                         });
@@ -1587,7 +1586,7 @@ impl TranslationAmigoApp {
 
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if text_button(ui, "Refresh model list", palette).clicked() {
+                            if secondary_button(ui, "Refresh model list", palette).clicked() {
                                 refresh_ollama = true;
                             }
                         });
@@ -1595,7 +1594,7 @@ impl TranslationAmigoApp {
                         ui.add_space(8.0);
                         ui.label(
                             RichText::new("PARALLEL REQUESTS")
-                                .size(9.5)
+                                .size(TYPE.micro)
                                 .strong()
                                 .color(palette.text_faint),
                         );
@@ -1604,7 +1603,7 @@ impl TranslationAmigoApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Local")
-                                    .size(11.5)
+                                    .size(TYPE.small)
                                     .color(palette.text_secondary),
                             );
                             ui.add(
@@ -1614,7 +1613,7 @@ impl TranslationAmigoApp {
                             );
                             ui.label(
                                 RichText::new("This may be limited by local OLLAMA_NUM_PARALLEL variable")
-                                    .size(9.5)
+                                    .size(TYPE.micro)
                                     .color(palette.text_faint),
                             );
                         });
@@ -1622,7 +1621,7 @@ impl TranslationAmigoApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Cloud")
-                                    .size(11.5)
+                                    .size(TYPE.small)
                                     .color(palette.text_secondary),
                             );
                             ui.add(
@@ -1632,7 +1631,7 @@ impl TranslationAmigoApp {
                             );
                             ui.label(
                                 RichText::new("Plans allow 1 (Free), 3 (Pro), 10 (Max)")
-                                    .size(9.5)
+                                    .size(TYPE.micro)
                                     .color(palette.text_faint),
                             );
                         });
@@ -1644,7 +1643,7 @@ impl TranslationAmigoApp {
                         ui.add(
                             Label::new(
                                 RichText::new(format!("Log: {}", log_path.display()))
-                                    .size(9.5)
+                                    .size(TYPE.micro)
                                     .color(palette.text_faint),
                             )
                             .wrap(),
@@ -1656,7 +1655,7 @@ impl TranslationAmigoApp {
                                 .checkbox(
                                     &mut verbose_logging,
                                     RichText::new("Verbose logging")
-                                        .size(11.0)
+                                        .size(TYPE.small)
                                         .color(palette.text_secondary),
                                 )
                                 .changed()
@@ -1667,7 +1666,7 @@ impl TranslationAmigoApp {
                             ui.with_layout(
                                 Layout::right_to_left(Align::Center),
                                 |ui| {
-                                    if text_button(ui, "Close", palette).clicked() {
+                                    if secondary_button(ui, "Close", palette).clicked() {
                                         close = true;
                                     }
                                     ui.add_space(4.0);
@@ -1676,7 +1675,7 @@ impl TranslationAmigoApp {
                                     } else {
                                         "Copy diagnostics"
                                     };
-                                    if text_button(ui, label, palette).clicked() {
+                                    if secondary_button(ui, label, palette).clicked() {
                                         diagnostics_requested = true;
                                     }
                                 },
@@ -1772,7 +1771,7 @@ impl TranslationAmigoApp {
                 Frame::new()
                     .fill(palette.surface)
                     .stroke(Stroke::new(1.0_f32, palette.border_strong))
-                    .corner_radius(CornerRadius::same(18))
+                    .corner_radius(CornerRadius::same(RADIUS.lg))
                     .inner_margin(Margin::same(20)),
             )
             .show(ctx, |ui| {
@@ -1786,8 +1785,7 @@ impl TranslationAmigoApp {
                         } else {
                             "Provider settings"
                         })
-                        .size(15.0)
-                        .strong()
+                        .font(semibold(TYPE.title))
                         .color(palette.text),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1805,11 +1803,13 @@ impl TranslationAmigoApp {
                             if ui
                                 .selectable_label(
                                     selected,
-                                    RichText::new(kind.label()).size(12.5).color(if selected {
-                                        palette.text
-                                    } else {
-                                        palette.text_muted
-                                    }),
+                                    RichText::new(kind.label()).size(TYPE.body).color(
+                                        if selected {
+                                            palette.text
+                                        } else {
+                                            palette.text_muted
+                                        },
+                                    ),
                                 )
                                 .clicked()
                             {
@@ -1826,7 +1826,7 @@ impl TranslationAmigoApp {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("MODEL")
-                            .size(9.5)
+                            .size(TYPE.micro)
                             .strong()
                             .color(palette.text_faint),
                     );
@@ -1835,7 +1835,7 @@ impl TranslationAmigoApp {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("TRANSLATION MODE")
-                            .size(9.5)
+                            .size(TYPE.micro)
                             .strong()
                             .color(palette.text_faint),
                     );
@@ -1846,11 +1846,13 @@ impl TranslationAmigoApp {
                             if ui
                                 .selectable_label(
                                     selected,
-                                    RichText::new(mode.label()).size(12.0).color(if selected {
-                                        palette.text
-                                    } else {
-                                        palette.text_muted
-                                    }),
+                                    RichText::new(mode.label()).size(TYPE.body).color(
+                                        if selected {
+                                            palette.text
+                                        } else {
+                                            palette.text_muted
+                                        },
+                                    ),
                                 )
                                 .clicked()
                             {
@@ -1863,14 +1865,14 @@ impl TranslationAmigoApp {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new("REGISTER")
-                                .size(9.5)
+                                .size(TYPE.micro)
                                 .strong()
                                 .color(palette.text_faint),
                         );
                         egui::ComboBox::from_id_salt("provider_dialog_register")
                             .selected_text(
                                 RichText::new(dialog.draft.register.label())
-                                    .size(12.0)
+                                    .size(TYPE.body)
                                     .color(palette.text),
                             )
                             .width(140.0)
@@ -1888,7 +1890,7 @@ impl TranslationAmigoApp {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("CONTEXT HINT")
-                            .size(9.5)
+                            .size(TYPE.micro)
                             .strong()
                             .color(palette.text_faint),
                     );
@@ -1897,11 +1899,11 @@ impl TranslationAmigoApp {
                             .char_limit(300)
                             .desired_width(f32::INFINITY)
                             .hint_text("e.g. flirty conversation between friends")
-                            .font(FontId::proportional(12.5)),
+                            .font(FontId::proportional(TYPE.body)),
                     );
                     ui.label(
                         RichText::new("Optional. Appended to the prompt as context.")
-                            .size(10.0)
+                            .size(TYPE.caption)
                             .color(palette.text_faint),
                     );
 
@@ -1913,7 +1915,7 @@ impl TranslationAmigoApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("# OF TRANSLATIONS")
-                                    .size(9.5)
+                                    .size(TYPE.micro)
                                     .strong()
                                     .color(palette.text_faint),
                             );
@@ -1926,7 +1928,7 @@ impl TranslationAmigoApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("TEMPERATURE")
-                                    .size(9.5)
+                                    .size(TYPE.micro)
                                     .strong()
                                     .color(palette.text_faint),
                             );
@@ -1939,7 +1941,7 @@ impl TranslationAmigoApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("NUCLEUS (TOP_P)")
-                                    .size(9.5)
+                                    .size(TYPE.micro)
                                     .strong()
                                     .color(palette.text_faint),
                             );
@@ -1954,7 +1956,7 @@ impl TranslationAmigoApp {
                         RichText::new(
                             "Sign in with DeepL in Settings before translating with this provider.",
                         )
-                        .size(10.5)
+                        .size(TYPE.caption)
                         .color(palette.warning),
                     );
                 }
@@ -1968,7 +1970,7 @@ impl TranslationAmigoApp {
                     if primary_button(ui, label, true, palette).clicked() {
                         save = true;
                     }
-                    if text_button(ui, "Cancel", palette).clicked() {
+                    if secondary_button(ui, "Cancel", palette).clicked() {
                         close = true;
                     }
                 });
@@ -2041,7 +2043,7 @@ fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Pal
 
         ui.label(
             RichText::new("From")
-                .size(9.5)
+                .size(TYPE.micro)
                 .strong()
                 .color(palette.text_faint),
         );
@@ -2049,7 +2051,7 @@ fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Pal
         egui::ComboBox::from_id_salt("provider_dialog_source")
             .selected_text(
                 RichText::new(pair.source.label())
-                    .size(12.5)
+                    .size(TYPE.body)
                     .strong()
                     .color(palette.text),
             )
@@ -2072,7 +2074,7 @@ fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Pal
 
         ui.label(
             RichText::new("To")
-                .size(9.5)
+                .size(TYPE.micro)
                 .strong()
                 .color(palette.text_faint),
         );
@@ -2081,7 +2083,7 @@ fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Pal
         egui::ComboBox::from_id_salt("provider_dialog_target")
             .selected_text(
                 RichText::new(pair.target.label())
-                    .size(12.5)
+                    .size(TYPE.body)
                     .strong()
                     .color(palette.text),
             )
@@ -2117,7 +2119,7 @@ fn model_combo(
     egui::ComboBox::from_id_salt("provider_dialog_model")
         .selected_text(
             RichText::new(slot.model.label())
-                .size(12.0)
+                .size(TYPE.body)
                 .color(palette.text),
         )
         .width(210.0)
@@ -2133,7 +2135,7 @@ fn model_combo(
     if !available(slot.model) {
         ui.label(
             RichText::new("This model isn't available yet. Check Settings for Ollama status.")
-                .size(10.5)
+                .size(TYPE.caption)
                 .color(palette.warning),
         );
     }
@@ -2142,10 +2144,7 @@ fn model_combo(
 fn result_card(ui: &mut Ui, palette: &Palette, add_contents: impl FnOnce(&mut Ui)) {
     let width = ui.available_width();
 
-    Frame::new()
-        .fill(palette.surface)
-        .stroke(Stroke::new(1.0_f32, palette.border))
-        .corner_radius(CornerRadius::same(12))
+    card_frame(palette)
         .inner_margin(Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width((width - 28.0).max(80.0));
@@ -2158,15 +2157,12 @@ fn add_provider_button(ui: &mut Ui, palette: &Palette) -> bool {
     let width = ui.available_width();
     let mut clicked = false;
 
-    Frame::new()
-        .fill(palette.surface_muted)
-        .stroke(Stroke::new(1.0_f32, palette.border))
-        .corner_radius(CornerRadius::same(10))
+    inset_frame(palette)
         .inner_margin(Margin::symmetric(12, 7))
         .show(ui, |ui| {
             ui.set_width((width - 24.0).max(120.0));
             ui.horizontal(|ui| {
-                if text_button(ui, "+ Add Translation Provider", palette).clicked() {
+                if secondary_button(ui, "+ Add Translation Provider", palette).clicked() {
                     clicked = true;
                 }
             });
@@ -2217,16 +2213,15 @@ fn result_section(
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(
             RichText::new(slot_summary(slot))
-                .size(12.5)
-                .strong()
+                .font(semibold(TYPE.body))
                 .color(palette.text),
         );
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if text_button(ui, "×", palette).clicked() {
+            if secondary_button(ui, "×", palette).clicked() {
                 *delete_requested = Some(slot.id);
             }
-            if text_button(ui, "Configure", palette).clicked() {
+            if secondary_button(ui, "Configure", palette).clicked() {
                 *edit_requested = Some(slot.id);
             }
             if !multiple && !outcome.translations.is_empty() {
@@ -2235,7 +2230,7 @@ fn result_section(
                 } else {
                     "Copy"
                 };
-                if text_button(ui, label, palette).clicked() {
+                if secondary_button(ui, label, palette).clicked() {
                     *copy_requested = Some((slot.id, None));
                 }
             }
@@ -2256,7 +2251,7 @@ fn result_section(
 
             if !status.is_empty() {
                 ui.add_space(6.0);
-                ui.label(RichText::new(status).size(10.5).color(if stale {
+                ui.label(RichText::new(status).size(TYPE.caption).color(if stale {
                     palette.warning
                 } else {
                     palette.text_faint
@@ -2273,7 +2268,7 @@ fn result_section(
             ui.add_space(4.0);
             ui.label(
                 RichText::new("Translating…")
-                    .size(12.0)
+                    .size(TYPE.body)
                     .color(palette.text_muted),
             );
         });
@@ -2281,7 +2276,7 @@ fn result_section(
         ui.add(
             Label::new(
                 RichText::new(&error.message)
-                    .size(12.0)
+                    .size(TYPE.body)
                     .color(palette.danger),
             )
             .wrap(),
@@ -2293,7 +2288,7 @@ fn result_section(
         );
         if actionable {
             ui.add_space(4.0);
-            if text_button(ui, "Open settings", palette).clicked() {
+            if secondary_button(ui, "Open settings", palette).clicked() {
                 *settings_requested = true;
             }
         }
@@ -2314,7 +2309,7 @@ fn result_section(
                         ui.add(
                             Label::new(
                                 RichText::new(&translation.text)
-                                    .size(15.5)
+                                    .size(TYPE.title)
                                     .color(palette.text),
                             )
                             .selectable(true)
@@ -2325,7 +2320,7 @@ fn result_section(
                     ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                         let item_copied = copied && outcome.copied_index == Some(index);
                         let label = if item_copied { "Copied" } else { "Copy" };
-                        if text_button(ui, label, palette).clicked() {
+                        if secondary_button(ui, label, palette).clicked() {
                             *copy_requested = Some((slot.id, Some(index)));
                         }
                     });
@@ -2334,7 +2329,7 @@ fn result_section(
                 ui.add(
                     Label::new(
                         RichText::new(&translation.text)
-                            .size(15.5)
+                            .size(TYPE.title)
                             .color(palette.text),
                     )
                     .selectable(true)
@@ -2347,15 +2342,19 @@ fn result_section(
             Provider::DeepL => "Sign in with DeepL to use this provider.",
             Provider::Ollama => "Start Ollama and choose an available model to use this provider.",
         };
-        ui.label(RichText::new(message).size(12.0).color(palette.text_muted));
+        ui.label(
+            RichText::new(message)
+                .size(TYPE.body)
+                .color(palette.text_muted),
+        );
         ui.add_space(4.0);
-        if text_button(ui, "Open settings", palette).clicked() {
+        if secondary_button(ui, "Open settings", palette).clicked() {
             *settings_requested = true;
         }
     } else {
         ui.label(
             RichText::new("Type on the left, then press Translate.")
-                .size(12.0)
+                .size(TYPE.body)
                 .color(palette.text_muted),
         );
     }
@@ -2376,7 +2375,11 @@ fn pane_header(
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.add_space(16.0);
-            ui.label(RichText::new(label).size(13.0).strong().color(palette.text));
+            ui.label(
+                RichText::new(label)
+                    .font(semibold(TYPE.heading))
+                    .color(palette.text),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(16.0);
                 if alert || (characters > 0 && width >= 300.0) {
@@ -2389,7 +2392,7 @@ fn pane_header(
                     } else {
                         format!("{} characters", with_separators(characters))
                     };
-                    ui.label(RichText::new(text).size(11.0).color(if alert {
+                    ui.label(RichText::new(text).size(TYPE.small).color(if alert {
                         palette.danger
                     } else {
                         palette.text_faint
@@ -2411,36 +2414,50 @@ fn badge(ui: &mut Ui, label: &str, fg: Color32, bg: Color32, border: Color32) {
     Frame::new()
         .fill(bg)
         .stroke(Stroke::new(1.0_f32, border))
-        .corner_radius(CornerRadius::same(255))
+        .corner_radius(CornerRadius::same(RADIUS.pill))
         .inner_margin(Margin::symmetric(7, 2))
         .show(ui, |ui| {
-            ui.label(RichText::new(label).size(9.5).strong().color(fg));
+            ui.label(RichText::new(label).size(TYPE.micro).strong().color(fg));
         });
 }
 
 fn dialog_intro(ui: &mut Ui, text: &str, palette: &Palette) {
-    ui.add(Label::new(RichText::new(text).size(12.0).color(palette.text_muted)).wrap());
+    ui.add(
+        Label::new(
+            RichText::new(text)
+                .size(TYPE.body)
+                .color(palette.text_muted),
+        )
+        .wrap(),
+    );
 }
 
 fn error_card(ui: &mut Ui, message: &str, palette: &Palette) {
     Frame::new()
         .fill(palette.danger_soft)
         .stroke(Stroke::new(1.0_f32, palette.danger_border))
-        .corner_radius(CornerRadius::same(9))
+        .corner_radius(CornerRadius::same(RADIUS.sm))
         .inner_margin(Margin::symmetric(11, 8))
         .show(ui, |ui| {
-            ui.add(Label::new(RichText::new(message).size(11.5).color(palette.danger)).wrap());
+            ui.add(
+                Label::new(
+                    RichText::new(message)
+                        .size(TYPE.small)
+                        .color(palette.danger),
+                )
+                .wrap(),
+            );
         });
 }
 
-fn text_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
+fn secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
     ui.add(
         Button::new(
             RichText::new(label)
-                .size(12.0)
+                .size(TYPE.small)
                 .color(palette.text_secondary),
         )
-        .frame(false)
+        .frame(true)
         .min_size(Vec2::new(0.0, 26.0)),
     )
 }
@@ -2449,16 +2466,20 @@ fn text_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
 /// the only hit target.
 fn close_button(ui: &mut Ui, palette: &Palette) -> Response {
     ui.add(
-        Button::new(RichText::new("×").size(24.0).color(palette.text_secondary))
-            .frame(false)
-            .min_size(Vec2::new(40.0, 40.0)),
+        Button::new(
+            RichText::new("×")
+                .size(TYPE.display)
+                .color(palette.text_secondary),
+        )
+        .frame(true)
+        .min_size(Vec2::new(40.0, 40.0)),
     )
 }
 
-fn danger_text_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
+fn danger_secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
     ui.add(
-        Button::new(RichText::new(label).size(12.0).color(palette.danger))
-            .frame(false)
+        Button::new(RichText::new(label).size(TYPE.small).color(palette.danger))
+            .frame(true)
             .min_size(Vec2::new(0.0, 26.0)),
     )
 }
@@ -2477,11 +2498,16 @@ fn primary_button(ui: &mut Ui, label: &str, enabled: bool, palette: &Palette) ->
 
     ui.add_enabled(
         enabled,
-        Button::new(RichText::new(label).size(13.0).strong().color(text_color))
-            .fill(fill)
-            .stroke(Stroke::NONE)
-            .corner_radius(CornerRadius::same(10))
-            .min_size(Vec2::new(126.0, 38.0)),
+        Button::new(
+            RichText::new(label)
+                .size(TYPE.heading)
+                .strong()
+                .color(text_color),
+        )
+        .fill(fill)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(RADIUS.sm))
+        .min_size(Vec2::new(126.0, 38.0)),
     )
 }
 

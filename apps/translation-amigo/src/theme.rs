@@ -1,6 +1,66 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, Stroke, TextStyle, Visuals};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Stroke, TextStyle, Visuals,
+};
+
+/// Corner radii, so widgets do not invent their own.
+pub struct Radii {
+    /// Inner controls: buttons, inputs, small chips.
+    pub sm: u8,
+    /// Cards and grouped panels.
+    pub md: u8,
+    /// Window-level panels and dialogs.
+    pub lg: u8,
+    /// Fully rounded (badges).
+    pub pill: u8,
+}
+
+pub const RADIUS: Radii = Radii {
+    sm: 8,
+    md: 12,
+    lg: 16,
+    pill: 255,
+};
+
+/// Type scale. Sizes are in points.
+pub struct TypeScale {
+    /// Section labels in upper case.
+    pub micro: f32,
+    /// Faint helper text.
+    pub caption: f32,
+    /// Compact controls and chips.
+    pub small: f32,
+    /// Default interface text.
+    pub body: f32,
+    /// Pane and group headings.
+    pub heading: f32,
+    /// Text inside inputs and reading surfaces.
+    pub large: f32,
+    /// Dialog titles and translated text.
+    pub title: f32,
+    /// The app name.
+    pub display: f32,
+}
+
+pub const TYPE: TypeScale = TypeScale {
+    micro: 9.5,
+    caption: 10.5,
+    small: 11.5,
+    body: 12.5,
+    heading: 13.5,
+    large: 14.0,
+    title: 15.5,
+    display: 20.0,
+};
+
+const SEMIBOLD: &str = "semibold";
+
+/// Semibold face of the interface font, for titles and emphasis.
+pub fn semibold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
+}
 
 #[derive(Clone, Copy)]
 pub struct Palette {
@@ -88,11 +148,19 @@ impl Palette {
         visuals.faint_bg_color = self.surface_muted;
         visuals.code_bg_color = self.surface_muted;
         visuals.window_stroke = Stroke::new(1.0_f32, self.border_strong);
-        visuals.window_corner_radius = CornerRadius::same(16);
-        visuals.menu_corner_radius = CornerRadius::same(10);
+        visuals.window_corner_radius = CornerRadius::same(RADIUS.lg);
+        visuals.menu_corner_radius = CornerRadius::same(RADIUS.sm);
         visuals.selection.bg_fill = self.accent_soft;
         visuals.selection.stroke = Stroke::new(1.0_f32, self.accent);
         visuals.hyperlink_color = self.accent;
+
+        // Only text fields and the translation output are selectable.
+
+        visuals.widgets.noninteractive.corner_radius = CornerRadius::same(RADIUS.md);
+        visuals.widgets.inactive.corner_radius = CornerRadius::same(RADIUS.sm);
+        visuals.widgets.hovered.corner_radius = CornerRadius::same(RADIUS.sm);
+        visuals.widgets.active.corner_radius = CornerRadius::same(RADIUS.sm);
+        visuals.widgets.open.corner_radius = CornerRadius::same(RADIUS.sm);
 
         visuals.widgets.noninteractive.bg_fill = self.surface;
         visuals.widgets.noninteractive.weak_bg_fill = self.surface;
@@ -123,7 +191,32 @@ impl Palette {
     }
 }
 
+/// A window-level panel, such as the source pane.
+pub fn panel_frame(palette: &Palette) -> Frame {
+    Frame::new()
+        .fill(palette.surface)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(RADIUS.lg))
+}
+
+/// A card inside a pane, such as one translation result.
+pub fn card_frame(palette: &Palette) -> Frame {
+    Frame::new()
+        .fill(palette.surface)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(RADIUS.md))
+}
+
+/// A nested control group on a muted surface.
+pub fn inset_frame(palette: &Palette) -> Frame {
+    Frame::new()
+        .fill(palette.surface_muted)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(RADIUS.sm))
+}
+
 pub fn apply(ctx: &egui::Context) {
+    install_fonts(ctx);
     ctx.set_theme(egui::ThemePreference::System);
 
     let light = Palette::for_theme(false);
@@ -135,6 +228,7 @@ pub fn apply(ctx: &egui::Context) {
     for theme in [egui::Theme::Light, egui::Theme::Dark] {
         ctx.style_mut_of(theme, |style| {
             style.text_styles = text_styles();
+            style.interaction.selectable_labels = false;
             style.spacing.item_spacing = egui::vec2(8.0, 8.0);
             style.spacing.button_padding = egui::vec2(12.0, 6.0);
             style.spacing.menu_margin = Margin::same(6);
@@ -142,13 +236,51 @@ pub fn apply(ctx: &egui::Context) {
     }
 }
 
+/// Bundle Inter as the interface font, keeping egui's emoji fallbacks so no
+/// glyph (arrows, ×, ·) renders as a missing-glyph box.
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+
+    fonts.font_data.insert(
+        "inter".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../../assets/fonts/Inter-Regular.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        "inter-semibold".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../../assets/fonts/Inter-SemiBold.ttf"
+        ))),
+    );
+
+    let proportional = fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default();
+    proportional.insert(0, "inter".to_owned());
+
+    let mut semibold_family = vec!["inter-semibold".to_owned()];
+    semibold_family.extend(
+        proportional
+            .iter()
+            .filter(|name| name.as_str() != "inter")
+            .cloned(),
+    );
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(SEMIBOLD.into()), semibold_family);
+
+    ctx.set_fonts(fonts);
+}
+
 fn text_styles() -> BTreeMap<TextStyle, FontId> {
     [
-        (TextStyle::Heading, FontId::proportional(20.0)),
-        (TextStyle::Body, FontId::proportional(14.0)),
-        (TextStyle::Button, FontId::proportional(13.0)),
-        (TextStyle::Small, FontId::proportional(11.0)),
-        (TextStyle::Monospace, FontId::monospace(12.0)),
+        (TextStyle::Heading, semibold(TYPE.display)),
+        (TextStyle::Body, FontId::proportional(TYPE.large)),
+        (TextStyle::Button, FontId::proportional(TYPE.body)),
+        (TextStyle::Small, FontId::proportional(TYPE.caption)),
+        (TextStyle::Monospace, FontId::monospace(TYPE.small)),
     ]
     .into_iter()
     .collect()
