@@ -29,6 +29,20 @@ impl Default for Sampling {
 
 pub const MAX_VARIANTS: usize = 10;
 
+/// Ollama Cloud allows 10 concurrent requests on the highest plan; local
+/// Ollama is bounded by `OLLAMA_NUM_PARALLEL`. Settings clamp to this.
+pub const MAX_PARALLEL_LIMIT: usize = 10;
+
+/// Split `count` requests into waves of at most `parallel` indices.
+fn batch_indices(count: usize, parallel: usize) -> Vec<Vec<usize>> {
+    let parallel = parallel.max(1);
+    (0..count)
+        .collect::<Vec<_>>()
+        .chunks(parallel)
+        .map(|wave| wave.to_vec())
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OllamaModel {
     #[default]
@@ -237,12 +251,18 @@ impl OllamaClient {
             context,
             Sampling::default(),
             1,
+            1,
         )?;
         Ok(variants.remove(0))
     }
 
     /// Ask for `count` samples of the same translation. With `temperature` at 0
     /// every sample is identical, so variation needs a sampling temperature.
+    ///
+    /// At most `parallel` requests are in flight at once. Ollama Cloud allows a
+    /// plan-dependent number of concurrent requests (1 Free, 3 Pro, 10 Max) and
+    /// queues anything beyond it, while a local daemon is bounded by
+    /// `OLLAMA_NUM_PARALLEL`.
     #[allow(clippy::too_many_arguments)]
     pub fn translate_variants(
         &self,
@@ -253,6 +273,7 @@ impl OllamaClient {
         context: Option<&str>,
         sampling: Sampling,
         count: usize,
+        parallel: usize,
     ) -> Result<Vec<Translation>, ApiError> {
         let characters = text.chars().count();
         if characters > MAX_TRANSLATION_CHARS {
@@ -263,71 +284,119 @@ impl OllamaClient {
 
         let prompt = build_prompt(text, source, target, register, context);
         let count = count.clamp(1, MAX_VARIANTS);
-        let mut translations = Vec::with_capacity(count);
+        let parallel = parallel.clamp(1, MAX_PARALLEL_LIMIT);
 
-        for _ in 0..count {
-            let payload = serde_json::json!({
-                "model": self.model,
-                "messages": [{
-                    "role": "user",
-                    "content": prompt,
-                }],
-                "stream": false,
-                "think": false,
-                "options": {
-                    "temperature": sampling.temperature,
-                    "top_p": sampling.top_p,
-                },
-            });
-
-            let response = match self
-                .http
-                .post(OLLAMA_CHAT_URL)
-                .header("Accept", "application/json")
-                .json(&payload)
-                .send()
-            {
-                Ok(response) => response,
-                Err(error) if error.is_connect() || error.is_timeout() => {
-                    return Err(ApiError::network(
-                        "Ollama isn't running. Start it with `ollama serve` and try again.",
-                    ));
-                }
-                Err(error) => {
-                    return Err(ApiError::network(format!(
-                        "The request to Ollama failed: {error}"
-                    )));
-                }
-            };
-
-            let status = response.status();
-            let body = response.text().map_err(ApiError::from)?;
-
-            if !status.is_success() {
-                return Err(map_ollama_error(status.as_u16(), &body, &self.model));
+        if count == 1 || parallel == 1 {
+            let mut translations = Vec::with_capacity(count);
+            for _ in 0..count {
+                translations.push(self.request_once(&prompt, source, sampling)?);
             }
+            return Ok(translations);
+        }
 
-            let parsed: ChatResponse = serde_json::from_str(&body).map_err(|error| {
-                ApiError::api(format!(
-                    "Ollama sent a response this app could not read ({error})."
-                ))
-            })?;
+        let mut slots: Vec<Option<Result<Translation, ApiError>>> =
+            (0..count).map(|_| None).collect();
 
-            let translation = parsed.message.content.trim();
-            if translation.is_empty() {
-                return Err(ApiError::api(
-                    "Ollama returned an empty translation. Try a smaller model or shorter text.",
-                ));
-            }
+        let prompt_ref = &prompt;
+        for wave in batch_indices(count, parallel) {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = wave
+                    .into_iter()
+                    .map(|index| {
+                        scope
+                            .spawn(move || (index, self.request_once(prompt_ref, source, sampling)))
+                    })
+                    .collect();
 
-            translations.push(Translation {
-                text: translation.to_string(),
-                detected_source_language: Some(source.code().to_string()),
-                billed_characters: None,
+                for handle in handles {
+                    if let Ok((index, result)) = handle.join() {
+                        slots[index] = Some(result);
+                    }
+                }
             });
         }
 
+        let mut translations = Vec::with_capacity(count);
+        for slot in slots {
+            match slot {
+                Some(Ok(translation)) => translations.push(translation),
+                Some(Err(error)) => return Err(error),
+                None => {
+                    return Err(ApiError::api(
+                        "A translation request stopped unexpectedly. Try again.",
+                    ))
+                }
+            }
+        }
+
         Ok(translations)
+    }
+
+    fn request_once(
+        &self,
+        prompt: &str,
+        source: Language,
+        sampling: Sampling,
+    ) -> Result<Translation, ApiError> {
+        let payload = serde_json::json!({
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": prompt,
+            }],
+            "stream": false,
+            "think": false,
+            "options": {
+                "temperature": sampling.temperature,
+                "top_p": sampling.top_p,
+            },
+        });
+
+        let response = match self
+            .http
+            .post(OLLAMA_CHAT_URL)
+            .header("Accept", "application/json")
+            .json(&payload)
+            .send()
+        {
+            Ok(response) => response,
+            Err(error) if error.is_connect() || error.is_timeout() => {
+                return Err(ApiError::network(
+                    "Ollama isn't running. Start it with `ollama serve` and try again.",
+                ));
+            }
+            Err(error) => {
+                return Err(ApiError::network(format!(
+                    "The request to Ollama failed: {error}"
+                )));
+            }
+        };
+
+        let status = response.status();
+        let body = response.text().map_err(ApiError::from)?;
+
+        if !status.is_success() {
+            return Err(map_ollama_error(status.as_u16(), &body, &self.model));
+        }
+
+        let parsed: ChatResponse = serde_json::from_str(&body).map_err(|error| {
+            ApiError::api(format!(
+                "Ollama sent a response this app could not read ({error})."
+            ))
+        })?;
+
+        let translation = parsed.message.content.trim();
+        if translation.is_empty() {
+            return Err(ApiError::api(
+                "Ollama returned an empty translation. Try a smaller model or shorter text.",
+            ));
+        }
+
+        Ok(Translation {
+            text: translation.to_string(),
+            detected_source_language: Some(source.code().to_string()),
+            billed_characters: None,
+        })
     }
 }
 
@@ -611,6 +680,18 @@ mod tests {
         assert_eq!(model.id(), "deepseek-v4.1-flash:cloud");
         assert!(model.is_cloud());
         assert!(!OllamaModel::TranslateGemma4b.is_cloud());
+    }
+
+    #[test]
+    fn batches_requests_into_waves() {
+        assert_eq!(batch_indices(0, 3), Vec::<Vec<usize>>::new());
+        assert_eq!(batch_indices(1, 3), vec![vec![0]]);
+        assert_eq!(batch_indices(3, 3), vec![vec![0, 1, 2]]);
+        assert_eq!(
+            batch_indices(10, 3),
+            vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8], vec![9]]
+        );
+        assert_eq!(batch_indices(2, 0), vec![vec![0], vec![1]]);
     }
 
     #[test]

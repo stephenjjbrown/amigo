@@ -11,8 +11,8 @@ pub use api::{ApiClient, ApiMode, Translation, Usage};
 pub use error::{ApiError, ErrorKind};
 pub use mcp::{McpClient, McpSession, SessionStatus, MCP_ENDPOINT, MCP_MAX_TEXT_CHARS};
 pub use ollama::{
-    fetch_status, OllamaClient, OllamaModel, OllamaStatus, Register, Sampling, MAX_VARIANTS,
-    OLLAMA_BASE_URL, OLLAMA_CHAT_URL, OLLAMA_TAGS_URL,
+    fetch_status, OllamaClient, OllamaModel, OllamaStatus, Register, Sampling, MAX_PARALLEL_LIMIT,
+    MAX_VARIANTS, OLLAMA_BASE_URL, OLLAMA_CHAT_URL, OLLAMA_TAGS_URL,
 };
 pub use pairs::{
     allowed_targets, allowed_targets_for, is_supported_pair, swap_pair, target_for_source,

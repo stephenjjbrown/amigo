@@ -45,6 +45,7 @@ pub enum ProviderJob {
         context: Option<String>,
         sampling: Sampling,
         count: usize,
+        parallel: usize,
     },
 }
 
@@ -220,6 +221,7 @@ impl Worker {
                             context,
                             sampling,
                             count,
+                            parallel,
                         } => (
                             slot_id,
                             Provider::Ollama,
@@ -232,6 +234,7 @@ impl Worker {
                                 context.as_deref(),
                                 sampling,
                                 count,
+                                parallel,
                             ),
                         ),
                     };
@@ -404,11 +407,14 @@ impl Worker {
         context: Option<&str>,
         sampling: Sampling,
         count: usize,
+        parallel: usize,
     ) -> Result<Vec<Translation>, ApiError> {
         validate_request(text, source, target)?;
 
         let client = OllamaClient::new(model)?;
-        client.translate_variants(text, source, target, register, context, sampling, count)
+        client.translate_variants(
+            text, source, target, register, context, sampling, count, parallel,
+        )
     }
 
     fn install_session(&mut self, session: McpSession) -> Result<(), ApiError> {

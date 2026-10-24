@@ -4,7 +4,7 @@ use std::sync::Arc;
 use deepl_core::{
     allowed_targets_for, swap_pair, target_for_source_with, ApiError, ErrorKind, LangPair,
     OllamaModel, OllamaStatus, Provider, Register, Sampling, SessionStatus, Translation,
-    MAX_TRANSLATION_CHARS, MAX_VARIANTS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
+    MAX_PARALLEL_LIMIT, MAX_TRANSLATION_CHARS, MAX_VARIANTS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
 };
 use deepl_engine::{Command, Engine, Event, ProviderJob};
 use eframe::egui::{
@@ -17,7 +17,6 @@ use crate::theme::Palette;
 const AUTO_TRANSLATE_DELAY: f64 = 0.85;
 const MAX_CONTENT_WIDTH: f32 = 1240.0;
 const STACKED_LAYOUT_THRESHOLD: f32 = 760.0;
-const OLLAMA_MODEL_URL: &str = "https://ollama.com/library/translategemma";
 const DEFAULT_VARIANTS: usize = 5;
 const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
 const DEFAULT_MULTI_TOP_P: f32 = 0.95;
@@ -114,6 +113,10 @@ struct Preferences {
     auto_translate: bool,
     #[serde(default)]
     verbose_logging: bool,
+    #[serde(default = "default_local_parallel")]
+    local_parallel: usize,
+    #[serde(default = "default_cloud_parallel")]
+    cloud_parallel: usize,
 
     // Legacy single-provider layout. Read once so existing installs migrate
     // their DeepL/Ollama setup into the provider list.
@@ -142,6 +145,8 @@ impl Default for Preferences {
             next_slot_id: 2,
             auto_translate: false,
             verbose_logging: false,
+            local_parallel: default_local_parallel(),
+            cloud_parallel: default_cloud_parallel(),
             legacy_deepl_pair: LangPair::default(),
             legacy_ollama_pair: LangPair::default(),
             legacy_deepl_enabled: true,
@@ -204,6 +209,14 @@ fn default_multi_temperature() -> f32 {
 
 fn default_multi_top_p() -> f32 {
     DEFAULT_MULTI_TOP_P
+}
+
+fn default_local_parallel() -> usize {
+    1
+}
+
+fn default_cloud_parallel() -> usize {
+    3
 }
 
 fn default_true() -> bool {
@@ -361,6 +374,16 @@ impl TranslationAmigoApp {
         !self.source_text.trim().is_empty()
     }
 
+    /// Concurrent request limit for a model, from the matching app setting.
+    fn parallel_for(&self, model: OllamaModel) -> usize {
+        let limit = if model.is_cloud() {
+            self.prefs.cloud_parallel
+        } else {
+            self.prefs.local_parallel
+        };
+        limit.clamp(1, MAX_PARALLEL_LIMIT)
+    }
+
     fn character_count(&self) -> usize {
         self.source_text.chars().count()
     }
@@ -504,6 +527,7 @@ impl TranslationAmigoApp {
                     context: slot.context().map(str::to_string),
                     sampling: slot.sampling(),
                     count: slot.count(),
+                    parallel: self.parallel_for(slot.model),
                 },
             });
         }
@@ -1274,6 +1298,8 @@ impl TranslationAmigoApp {
     // ---------------------------------------------------------------- settings
 
     fn ui_settings(&mut self, ctx: &egui::Context, palette: &Palette) {
+        // DeepL tokens are stored in a protected local session file for this
+        // prototype. Logs never include tokens or translated text.
         if !self.settings_open {
             return;
         }
@@ -1310,11 +1336,12 @@ impl TranslationAmigoApp {
         let log_path = crate::logging::log_path();
 
         let mut verbose_logging = self.prefs.verbose_logging;
+        let mut local_parallel = self.prefs.local_parallel;
+        let mut cloud_parallel = self.prefs.cloud_parallel;
         let mut sign_in = false;
         let mut sign_out = false;
         let mut cancel_sign_in = false;
         let mut refresh_ollama = false;
-        let mut open_ollama_models = false;
         let mut diagnostics_requested = false;
         let mut verbose_changed = false;
 
@@ -1345,7 +1372,7 @@ impl TranslationAmigoApp {
                             .color(palette.text),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if text_button(ui, "×", palette).clicked() {
+                        if close_button(ui, palette).clicked() {
                             close = true;
                         }
                     });
@@ -1560,31 +1587,55 @@ impl TranslationAmigoApp {
 
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if text_button(ui, "Refresh", palette).clicked() {
+                            if text_button(ui, "Refresh model list", palette).clicked() {
                                 refresh_ollama = true;
-                            }
-                            if ui
-                                .add(
-                                    Button::new(
-                                        RichText::new("Model library")
-                                            .size(11.5)
-                                            .color(palette.accent),
-                                    )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                open_ollama_models = true;
                             }
                         });
 
+                        ui.add_space(8.0);
                         ui.label(
-                            RichText::new(
-                                "Models are chosen per translation provider, not here.",
-                            )
-                            .size(10.5)
-                            .color(palette.text_faint),
+                            RichText::new("PARALLEL REQUESTS")
+                                .size(9.5)
+                                .strong()
+                                .color(palette.text_faint),
                         );
+                        ui.add_space(2.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Local")
+                                    .size(11.5)
+                                    .color(palette.text_secondary),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut local_parallel)
+                                    .range(1..=MAX_PARALLEL_LIMIT)
+                                    .speed(0.1),
+                            );
+                            ui.label(
+                                RichText::new("This may be limited by local OLLAMA_NUM_PARALLEL variable")
+                                    .size(9.5)
+                                    .color(palette.text_faint),
+                            );
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Cloud")
+                                    .size(11.5)
+                                    .color(palette.text_secondary),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut cloud_parallel)
+                                    .range(1..=MAX_PARALLEL_LIMIT)
+                                    .speed(0.1),
+                            );
+                            ui.label(
+                                RichText::new("Plans allow 1 (Free), 3 (Pro), 10 (Max)")
+                                    .size(9.5)
+                                    .color(palette.text_faint),
+                            );
+                        });
 
                         ui.add_space(6.0);
                         hairline(ui, palette);
@@ -1631,17 +1682,6 @@ impl TranslationAmigoApp {
                                 },
                             );
                         });
-
-                        ui.add(
-                            Label::new(
-                                RichText::new(
-                                    "DeepL tokens are stored in a protected local session file for this prototype. Logs never include tokens or translated text.",
-                                )
-                                .size(10.0)
-                                .color(palette.text_faint),
-                            )
-                            .wrap(),
-                        );
                     });
             });
 
@@ -1666,13 +1706,19 @@ impl TranslationAmigoApp {
             self.engine.send(Command::LoadOllamaStatus);
         }
 
-        if open_ollama_models {
-            open_url(OLLAMA_MODEL_URL);
-        }
-
         if verbose_changed {
             self.prefs.verbose_logging = verbose_logging;
             crate::logging::set_verbose(verbose_logging);
+        }
+
+        let local_parallel = local_parallel.clamp(1, MAX_PARALLEL_LIMIT);
+        if local_parallel != self.prefs.local_parallel {
+            self.prefs.local_parallel = local_parallel;
+        }
+
+        let cloud_parallel = cloud_parallel.clamp(1, MAX_PARALLEL_LIMIT);
+        if cloud_parallel != self.prefs.cloud_parallel {
+            self.prefs.cloud_parallel = cloud_parallel;
         }
 
         if diagnostics_requested {
@@ -1745,7 +1791,7 @@ impl TranslationAmigoApp {
                         .color(palette.text),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if text_button(ui, "×", palette).clicked() {
+                        if close_button(ui, palette).clicked() {
                             close = true;
                         }
                     });
@@ -1759,13 +1805,11 @@ impl TranslationAmigoApp {
                             if ui
                                 .selectable_label(
                                     selected,
-                                    RichText::new(kind.label())
-                                        .size(12.5)
-                                        .color(if selected {
-                                            palette.text
-                                        } else {
-                                            palette.text_muted
-                                        }),
+                                    RichText::new(kind.label()).size(12.5).color(if selected {
+                                        palette.text
+                                    } else {
+                                        palette.text_muted
+                                    }),
                                 )
                                 .clicked()
                             {
@@ -1802,13 +1846,11 @@ impl TranslationAmigoApp {
                             if ui
                                 .selectable_label(
                                     selected,
-                                    RichText::new(mode.label())
-                                        .size(12.0)
-                                        .color(if selected {
-                                            palette.text
-                                        } else {
-                                            palette.text_muted
-                                        }),
+                                    RichText::new(mode.label()).size(12.0).color(if selected {
+                                        palette.text
+                                    } else {
+                                        palette.text_muted
+                                    }),
                                 )
                                 .clicked()
                             {
@@ -1906,27 +1948,6 @@ impl TranslationAmigoApp {
                                     .step_by(0.05),
                             );
                         });
-
-                        ui.label(
-                            RichText::new(
-                                "Above 2.0 some backends reject the request; above ~4.0 output degrades into noise.",
-                            )
-                            .size(10.0)
-                            .color(palette.text_faint),
-                        );
-                    }
-
-                    if dialog.draft.model.is_cloud() {
-                        ui.add(
-                            Label::new(
-                                RichText::new(
-                                    "Cloud model: translated text is sent to Ollama Cloud.",
-                                )
-                                .size(10.5)
-                                .color(palette.text_faint),
-                            )
-                            .wrap(),
-                        );
                     }
                 } else if !signed_in {
                     ui.label(
@@ -2424,6 +2445,16 @@ fn text_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
     )
 }
 
+/// Close control for the dialogs. Larger than a text button because the glyph is
+/// the only hit target.
+fn close_button(ui: &mut Ui, palette: &Palette) -> Response {
+    ui.add(
+        Button::new(RichText::new("×").size(24.0).color(palette.text_secondary))
+            .frame(false)
+            .min_size(Vec2::new(40.0, 40.0)),
+    )
+}
+
 fn danger_text_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
     ui.add(
         Button::new(RichText::new(label).size(12.0).color(palette.danger))
@@ -2552,28 +2583,6 @@ fn with_separators(value: usize) -> String {
     out
 }
 
-fn open_url(url: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("start")
-            .arg("")
-            .arg(url)
-            .spawn();
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2585,6 +2594,8 @@ mod tests {
             next_slot_id: 0,
             auto_translate: false,
             verbose_logging: false,
+            local_parallel: default_local_parallel(),
+            cloud_parallel: default_cloud_parallel(),
             legacy_deepl_pair: LangPair {
                 source: Language::English,
                 target: Language::Spanish,
