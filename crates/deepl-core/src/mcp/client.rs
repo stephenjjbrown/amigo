@@ -115,7 +115,7 @@ pub struct McpClient {
 impl McpClient {
     pub fn new(session: &McpSession) -> Result<Self, ApiError> {
         let http = reqwest::blocking::Client::builder()
-            .user_agent(concat!("DeepLClient/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("TranslationAmigo/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(60))
             .build()
             .map_err(|error| {
@@ -225,7 +225,7 @@ impl McpClient {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "DeepL Client",
+                    "name": "Translation Amigo",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
             },

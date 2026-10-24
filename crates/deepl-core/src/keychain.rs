@@ -2,7 +2,7 @@ use keyring::Entry;
 
 use crate::error::ApiError;
 
-const SERVICE: &str = "com.stephen.deeplclient";
+const SERVICE: &str = "com.stephen.translationamigo";
 const API_KEY_ACCOUNT: &str = "deepl-api-key";
 const MCP_SESSION_ACCOUNT: &str = "mcp-session";
 const MCP_CLIENT_ACCOUNT: &str = "mcp-client";

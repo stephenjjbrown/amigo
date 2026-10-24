@@ -1,11 +1,11 @@
 [package]
-name = "deepl-client"
+name = "translation-amigo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "deepl-client"
+name = "translation-amigo"
 path = "src/main.rs"
 
 [dependencies]

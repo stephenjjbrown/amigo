@@ -760,19 +760,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deepl-client"
-version = "0.1.0"
-dependencies = [
- "deepl-core",
- "deepl-engine",
- "eframe",
- "egui",
- "log",
- "serde",
- "wgpu",
-]
-
-[[package]]
 name = "deepl-core"
 version = "0.1.0"
 dependencies = [
@@ -3586,6 +3573,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "translation-amigo"
+version = "0.1.0"
+dependencies = [
+ "deepl-core",
+ "deepl-engine",
+ "eframe",
+ "egui",
+ "log",
+ "serde",
+ "wgpu",
 ]
 
 [[package]]

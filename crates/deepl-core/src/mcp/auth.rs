@@ -24,7 +24,7 @@ const DEFAULT_REVOCATION_ENDPOINT: &str = "https://mcp.deepl.com/.idp/revoke";
 const CALLBACK_PATH: &str = "/callback";
 const CALLBACK_PORTS: [u16; 5] = [53682, 53683, 53684, 53685, 53686];
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(180);
-const CLIENT_NAME: &str = "DeepL Client";
+const CLIENT_NAME: &str = "Translation Amigo";
 const SCOPE: &str = "offline_access";
 
 #[derive(Debug, Clone)]
@@ -134,7 +134,7 @@ fn bind_listener() -> Result<(TcpListener, u16), ApiError> {
     }
 
     Err(ApiError::system(
-        "Could not open a local port for sign-in. Close any other DeepL Client instance and try again.",
+        "Could not open a local port for sign-in. Close any other Translation Amigo instance and try again.",
     ))
 }
 
@@ -369,7 +369,7 @@ fn wait_for_callback(
                     write_response(
                         &mut stream,
                         "200 OK",
-                        "<h1>Sign-in failed</h1><p>Return to DeepL Client and try again.</p>",
+                        "<h1>Sign-in failed</h1><p>Return to Translation Amigo and try again.</p>",
                     );
                     return Err(ApiError::auth(format!(
                         "DeepL sign-in failed: {description}"
@@ -380,7 +380,7 @@ fn wait_for_callback(
                     write_response(
                         &mut stream,
                         "200 OK",
-                        "<h1>Sign-in failed</h1><p>Return to DeepL Client and try again.</p>",
+                        "<h1>Sign-in failed</h1><p>Return to Translation Amigo and try again.</p>",
                     );
                     return Err(ApiError::auth(
                         "DeepL sign-in returned an unexpected state. Try again.",
@@ -391,7 +391,7 @@ fn wait_for_callback(
                     write_response(
                         &mut stream,
                         "200 OK",
-                        "<h1>Sign-in failed</h1><p>Return to DeepL Client and try again.</p>",
+                        "<h1>Sign-in failed</h1><p>Return to Translation Amigo and try again.</p>",
                     );
                     return Err(ApiError::auth(
                         "DeepL sign-in did not return an authorization code.",
@@ -401,7 +401,7 @@ fn wait_for_callback(
                 write_response(
                     &mut stream,
                     "200 OK",
-                    "<h1>Signed in</h1><p>You can close this window and return to DeepL Client.</p>",
+                    "<h1>Signed in</h1><p>You can close this window and return to Translation Amigo.</p>",
                 );
                 return Ok(code);
             }

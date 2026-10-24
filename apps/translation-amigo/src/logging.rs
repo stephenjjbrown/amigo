@@ -96,7 +96,7 @@ pub fn init() {
     let _ = log::set_logger(logger);
     log::set_max_level(log::LevelFilter::Debug);
 
-    log::info!("DeepL Client {} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("Translation Amigo {} starting", env!("CARGO_PKG_VERSION"));
     log::info!("log file: {}", logger.path.display());
 }
 
@@ -129,28 +129,30 @@ fn default_log_path() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join("Library/Logs/DeepL Client/deepl-client.log");
+            return PathBuf::from(home)
+                .join("Library/Logs/Translation Amigo/translation-amigo.log");
         }
     }
 
     #[cfg(target_os = "windows")]
     {
         if let Some(base) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(base).join("DeepL Client/logs/deepl-client.log");
+            return PathBuf::from(base).join("Translation Amigo/logs/translation-amigo.log");
         }
     }
 
     #[cfg(target_os = "linux")]
     {
         if let Some(base) = std::env::var_os("XDG_STATE_HOME") {
-            return PathBuf::from(base).join("deepl-client/deepl-client.log");
+            return PathBuf::from(base).join("translation-amigo/translation-amigo.log");
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".local/state/deepl-client/deepl-client.log");
+            return PathBuf::from(home)
+                .join(".local/state/translation-amigo/translation-amigo.log");
         }
     }
 
-    std::env::temp_dir().join("deepl-client.log")
+    std::env::temp_dir().join("translation-amigo.log")
 }
 
 fn timestamp() -> String {

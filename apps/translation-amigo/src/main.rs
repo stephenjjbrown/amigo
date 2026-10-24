@@ -4,7 +4,7 @@ mod app;
 mod logging;
 mod theme;
 
-use app::DeepLApp;
+use app::TranslationAmigoApp;
 
 fn main() -> eframe::Result<()> {
     logging::init();
@@ -13,13 +13,13 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([780.0, 540.0])
-            .with_title("DeepL Client"),
+            .with_title("Translation Amigo"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "DeepL Client",
+        "Translation Amigo",
         options,
-        Box::new(|cc| Ok(Box::new(DeepLApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(TranslationAmigoApp::new(cc)))),
     )
 }

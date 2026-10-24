@@ -59,7 +59,7 @@ impl Engine {
             .name("deepl-engine".to_string())
             .spawn(move || {
                 let http = match reqwest::blocking::Client::builder()
-                    .user_agent(concat!("DeepLClient/", env!("CARGO_PKG_VERSION")))
+                    .user_agent(concat!("TranslationAmigo/", env!("CARGO_PKG_VERSION")))
                     .timeout(Duration::from_secs(30))
                     .build()
                 {

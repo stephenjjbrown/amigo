@@ -80,7 +80,7 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new() -> Result<Self, ApiError> {
         let client = reqwest::blocking::Client::builder()
-            .user_agent(concat!("DeepLClient/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("TranslationAmigo/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(45))
             .build()
             .map_err(|error| {

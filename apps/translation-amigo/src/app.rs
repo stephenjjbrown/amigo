@@ -14,7 +14,8 @@ use eframe::egui::{
 use crate::theme::Palette;
 
 const AUTO_TRANSLATE_DELAY: f64 = 0.85;
-const MAX_TEXT_WIDTH: f32 = 1180.0;
+const MAX_CONTENT_WIDTH: f32 = 1240.0;
+const STACKED_LAYOUT_THRESHOLD: f32 = 760.0;
 
 #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 struct Preferences {
@@ -36,7 +37,7 @@ struct LastRun {
     ms: u128,
 }
 
-pub struct DeepLApp {
+pub struct TranslationAmigoApp {
     engine: Engine,
     prefs: Preferences,
 
@@ -65,7 +66,7 @@ pub struct DeepLApp {
     onboarded: bool,
 }
 
-impl DeepLApp {
+impl TranslationAmigoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
 
@@ -230,7 +231,10 @@ impl DeepLApp {
 
     fn diagnostics_text(&self) -> String {
         let mut text = String::new();
-        text.push_str(&format!("DeepL Client {}\n", env!("CARGO_PKG_VERSION")));
+        text.push_str(&format!(
+            "Translation Amigo {}\n",
+            env!("CARGO_PKG_VERSION")
+        ));
         text.push_str(&format!(
             "OS: {} {}\n",
             std::env::consts::OS,
@@ -446,12 +450,21 @@ impl DeepLApp {
     }
 
     fn ui_root(&mut self, ui: &mut Ui, ctx: &egui::Context, palette: &Palette) {
+        let available = ui.available_width();
+        let content_width = available.min(MAX_CONTENT_WIDTH);
+        let left_gutter = ((available - content_width) / 2.0).max(0.0);
+
         ui.horizontal(|ui| {
-            ui.add_space(((ui.available_width() - MAX_TEXT_WIDTH).max(0.0)) / 2.0);
-            ui.vertical(|ui| {
-                ui.set_max_width(MAX_TEXT_WIDTH);
-                self.ui_content(ui, ctx, palette);
-            });
+            ui.add_space(left_gutter);
+            ui.allocate_ui_with_layout(
+                Vec2::new(content_width, ui.available_height()),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    ui.set_width(content_width);
+                    ui.set_max_width(content_width);
+                    self.ui_content(ui, ctx, palette);
+                },
+            );
         });
     }
 
@@ -461,23 +474,26 @@ impl DeepLApp {
         self.ui_language_bar(ui, palette);
         ui.add_space(10.0);
 
-        let error_height = if self.error.is_some() { 46.0 } else { 0.0 };
+        let error_height = if self.error.is_some() { 76.0 } else { 0.0 };
         let spacing = if self.error.is_some() { 10.0 } else { 0.0 };
-        let action_height = 46.0;
-        let pane_height =
-            (ui.available_height() - action_height - error_height - spacing - 18.0).max(220.0);
+        let action_height = 48.0;
+        let panes_height =
+            (ui.available_height() - action_height - error_height - spacing - 16.0).max(180.0);
         let gap = 14.0;
+        let width = ui.available_width();
 
-        ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), pane_height),
-            Layout::left_to_right(Align::Min),
-            |ui| {
-                let pane_width = ((ui.available_width() - gap) / 2.0).max(220.0);
-                self.ui_source_pane(ui, palette, pane_width, pane_height);
-                ui.add_space(gap);
-                self.ui_target_pane(ui, ctx, palette, pane_width, pane_height);
-            },
-        );
+        if width >= STACKED_LAYOUT_THRESHOLD {
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.columns(2, |columns| {
+                self.ui_source_pane(&mut columns[0], palette, panes_height);
+                self.ui_target_pane(&mut columns[1], ctx, palette, panes_height);
+            });
+        } else {
+            let pane_height = ((panes_height - gap) / 2.0).max(150.0);
+            self.ui_source_pane(ui, palette, pane_height);
+            ui.add_space(gap);
+            self.ui_target_pane(ui, ctx, palette, pane_height);
+        }
 
         if self.error.is_some() {
             ui.add_space(10.0);
@@ -494,7 +510,7 @@ impl DeepLApp {
 
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new("DeepL Client")
+                RichText::new("Translation Amigo")
                     .size(13.0)
                     .strong()
                     .color(palette.text_secondary),
@@ -598,7 +614,8 @@ impl DeepLApp {
         }
     }
 
-    fn ui_source_pane(&mut self, ui: &mut Ui, palette: &Palette, width: f32, height: f32) {
+    fn ui_source_pane(&mut self, ui: &mut Ui, palette: &Palette, height: f32) {
+        let width = ui.available_width();
         let label = self.prefs.pair.source.label();
         let characters = self.source_text.chars().count();
         let over_limit = characters > MCP_MAX_TEXT_CHARS;
@@ -638,7 +655,7 @@ impl DeepLApp {
                                         TextEdit::multiline(&mut source_text)
                                             .id(Id::new("source_text"))
                                             .frame(false)
-                                            .desired_width((width - 32.0).max(40.0))
+                                            .desired_width((width - 44.0).max(40.0))
                                             .desired_rows(rows)
                                             .hint_text("Type or paste text to translate…")
                                             .font(FontId::proportional(15.5))
@@ -674,7 +691,7 @@ impl DeepLApp {
                                         .size(11.5)
                                         .color(palette.danger),
                                 );
-                            } else {
+                            } else if width >= 260.0 {
                                 let hint = if cfg!(target_os = "macos") {
                                     "Cmd+Enter to translate"
                                 } else {
@@ -704,14 +721,8 @@ impl DeepLApp {
         }
     }
 
-    fn ui_target_pane(
-        &mut self,
-        ui: &mut Ui,
-        ctx: &egui::Context,
-        palette: &Palette,
-        width: f32,
-        height: f32,
-    ) {
+    fn ui_target_pane(&mut self, ui: &mut Ui, ctx: &egui::Context, palette: &Palette, height: f32) {
+        let width = ui.available_width();
         let label = self.prefs.pair.target.label();
         let translation_text = self.translation.as_ref().map(|t| t.text.as_str());
         let characters = translation_text.map(|text| text.chars().count());
@@ -860,15 +871,17 @@ impl DeepLApp {
                                 );
                                 ui.add_space(4.0);
                             }
-                            ui.label(
-                                RichText::new(&status)
-                                    .size(11.0)
-                                    .color(if stale {
-                                        palette.warning
-                                    } else {
-                                        palette.text_faint
-                                    }),
-                            );
+                            if width >= 240.0 {
+                                ui.label(
+                                    RichText::new(&status)
+                                        .size(11.0)
+                                        .color(if stale {
+                                            palette.warning
+                                        } else {
+                                            palette.text_faint
+                                        }),
+                                );
+                            }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add_space(8.0);
                                 let copy_label = if copied { "Copied" } else { "Copy" };
@@ -994,6 +1007,7 @@ impl DeepLApp {
         }
 
         let screen = ctx.screen_rect();
+        let dialog_width = (screen.width() - 48.0).clamp(320.0, 460.0);
         let mut close = false;
 
         egui::Area::new(Id::new("settings_backdrop"))
@@ -1033,7 +1047,7 @@ impl DeepLApp {
             .collapsible(false)
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(460.0)
+            .default_width(dialog_width)
             .frame(
                 Frame::new()
                     .fill(palette.surface)
@@ -1042,7 +1056,7 @@ impl DeepLApp {
                     .inner_margin(Margin::same(20)),
             )
             .show(ctx, |ui| {
-                ui.set_width(420.0);
+                ui.set_width(dialog_width - 40.0);
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
 
                 ui.horizontal(|ui| {
@@ -1231,7 +1245,7 @@ impl DeepLApp {
     }
 }
 
-impl eframe::App for DeepLApp {
+impl eframe::App for TranslationAmigoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.now = ctx.input(|input| input.time);
 
@@ -1240,11 +1254,12 @@ impl eframe::App for DeepLApp {
         self.maybe_auto_translate(ctx);
 
         let palette = Palette::for_theme(ctx.style().visuals.dark_mode);
+        let horizontal_margin = (ctx.screen_rect().width() * 0.02).clamp(12.0, 28.0) as i8;
 
         egui::CentralPanel::default()
             .frame(Frame::new().fill(palette.bg).inner_margin(Margin {
-                left: 22,
-                right: 22,
+                left: horizontal_margin,
+                right: horizontal_margin,
                 top: 10,
                 bottom: 16,
             }))
@@ -1276,7 +1291,7 @@ fn pane_header(
             ui.label(RichText::new(label).size(13.0).strong().color(palette.text));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(16.0);
-                if characters > 0 || alert {
+                if alert || (characters > 0 && width >= 300.0) {
                     let text = if alert {
                         format!(
                             "{} / {} characters",

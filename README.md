@@ -1,11 +1,11 @@
-# DeepL Client
+# Translation Amigo
 
 A native, pure-Rust desktop translation client. It signs in with your DeepL
 account over OAuth and translates through DeepL's hosted MCP service — no API
 key to paste. The UI is `egui` on `wgpu`; there is no WebView, no JavaScript, and
 no local web server.
 
-![DeepL Client](assets/icon.png)
+![Translation Amigo](assets/icon.png)
 
 ## What works
 
@@ -23,12 +23,14 @@ no local web server.
 - Copy, clear, character count, stale-result indicator, error banners
 - `Cmd+Enter` to translate, `Cmd+,` for account settings, `Esc` to close
 - Access and refresh tokens stored in the macOS Keychain
+- Responsive layout: content is capped and centered on wide windows, and the two
+  panes stack when the window is narrow
 - Light/dark theme following the system
 
 ## Architecture
 
 ```text
-apps/deepl-client        egui + eframe UI on wgpu (thin, no business logic)
+apps/translation-amigo   egui + eframe UI on wgpu (thin, no business logic)
         │
         │  Command / Event channels (std::sync::mpsc)
         ▼
@@ -74,7 +76,7 @@ Requirements: a recent stable Rust toolchain (built with Rust 1.100), and Python
 only for regenerating icons.
 
 ```sh
-cargo run -p deepl-client
+cargo run -p translation-amigo
 ```
 
 On first launch the account dialog opens. Choose **Sign in with DeepL**, complete
@@ -84,7 +86,7 @@ the flow in your browser, and return to the app.
 
 ```sh
 ./scripts/bundle-macos.sh
-open "dist/DeepL Client.app"
+open "dist/Translation Amigo.app"
 ```
 
 The script builds the release binary, generates `AppIcon.icns` in pure Python,
@@ -103,8 +105,8 @@ writes `Info.plist`, and ad-hoc signs the bundle. The result is a ~9 MB app in
 
 ## Logging and diagnostics
 
-- Logs are written to `~/Library/Logs/DeepL Client/deepl-client.log` (rotated
-  once at 1 MB to `deepl-client.log.old`).
+- Logs are written to `~/Library/Logs/Translation Amigo/translation-amigo.log` (rotated
+  once at 1 MB to `translation-amigo.log.old`).
 - Default logging records the sign-in lifecycle, session load, translation
   summaries, and errors — including JSON-RPC codes, error details, HTTP status,
   and DeepL's `X-Trace-ID`.
@@ -142,7 +144,7 @@ crates/deepl-core/
 crates/deepl-engine/
   src/lib.rs          Command/Event engine on its own thread
 
-apps/deepl-client/
+apps/translation-amigo/
   src/main.rs         eframe entry point
   src/app.rs          UI, state, shortcuts, account modal, diagnostics
   src/logging.rs      file logger + in-memory ring buffer
