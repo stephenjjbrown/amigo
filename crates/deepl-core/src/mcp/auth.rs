@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::error::{ApiError, ErrorKind};
-use crate::keychain;
+use crate::session_store;
 
 use super::model::{now_unix, McpSession, MCP_ENDPOINT};
 
@@ -143,7 +143,7 @@ fn load_or_register_client(
     metadata: &AuthServerMetadata,
     redirect_uri: &str,
 ) -> Result<ClientRegistration, ApiError> {
-    if let Some(stored) = keychain::load_mcp_client()? {
+    if let Some(stored) = session_store::load_mcp_client()? {
         if let Ok(registration) = serde_json::from_str::<ClientRegistration>(&stored) {
             if registration.redirect_uri == redirect_uri {
                 log::info!("reusing OAuth client registration");
@@ -200,7 +200,7 @@ fn load_or_register_client(
     let encoded = serde_json::to_string(&registration).map_err(|error| {
         ApiError::system(format!("Could not encode the client registration: {error}"))
     })?;
-    keychain::save_mcp_client(&encoded)?;
+    session_store::save_mcp_client(&encoded)?;
     log::info!("OAuth client registration stored");
 
     Ok(registration)

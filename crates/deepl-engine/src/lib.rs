@@ -1,4 +1,4 @@
-//! Command engine: owns the MCP connection and OAuth session, and runs on its
+//! Command engine: owns the provider clients and OAuth session, and runs on its
 //! own thread. The UI only sends commands and polls events, so network and
 //! browser sign-in never block a frame.
 
@@ -9,8 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use deepl_core::{
-    is_supported_pair, keychain, mcp, ApiError, ErrorKind, Language, McpClient, McpSession,
-    SessionStatus, Translation, MCP_MAX_TEXT_CHARS,
+    fetch_status, is_supported_pair, mcp, session_store, ApiError, ErrorKind, Language, McpClient,
+    McpSession, OllamaClient, OllamaStatus, Provider, Register, SessionStatus, Translation,
+    MAX_TRANSLATION_CHARS,
 };
 
 pub type RepaintCallback = Arc<dyn Fn() + Send + Sync>;
@@ -20,11 +21,26 @@ pub enum Command {
     LoadSession,
     SignIn,
     SignOut,
+    LoadOllamaStatus,
     Translate {
         request_id: u64,
         text: String,
+        jobs: Vec<ProviderJob>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ProviderJob {
+    DeepL {
         source: Language,
         target: Language,
+    },
+    Ollama {
+        source: Language,
+        target: Language,
+        model: String,
+        register: Register,
+        context: Option<String>,
     },
 }
 
@@ -36,9 +52,12 @@ pub enum Event {
     SignInStarted,
     SignedIn(Result<SessionStatus, ApiError>),
     SignedOut(Result<SessionStatus, ApiError>),
-    Translation {
+    OllamaStatus(Result<OllamaStatus, ApiError>),
+    ProviderTranslation {
         request_id: u64,
+        provider: Provider,
         result: Result<Translation, ApiError>,
+        elapsed_ms: u128,
     },
 }
 
@@ -56,7 +75,7 @@ impl Engine {
         let worker_cancel = cancel_sign_in.clone();
 
         thread::Builder::new()
-            .name("deepl-engine".to_string())
+            .name("translation-engine".to_string())
             .spawn(move || {
                 let http = match reqwest::blocking::Client::builder()
                     .user_agent(concat!("TranslationAmigo/", env!("CARGO_PKG_VERSION")))
@@ -81,7 +100,7 @@ impl Engine {
                 }
                 .run(command_rx, event_tx, notify);
             })
-            .expect("failed to spawn the DeepL engine thread");
+            .expect("failed to spawn the translation engine thread");
 
         Self {
             commands: command_tx,
@@ -134,8 +153,6 @@ impl Worker {
                 self.cancel_sign_in.store(false, Ordering::SeqCst);
                 log::info!("sign-in started");
                 let _ = events.send(Event::SignInStarted);
-                // Tell the UI to show the waiting state before we block on the
-                // browser round-trip.
                 notify();
                 let result = self.sign_in();
                 match &result {
@@ -153,32 +170,76 @@ impl Worker {
                 }
                 let _ = events.send(Event::SignedOut(result));
             }
+            Command::LoadOllamaStatus => {
+                let result = self.ollama_status();
+                match &result {
+                    Ok(status) => log::info!(
+                        "Ollama status: running={}, models={}",
+                        status.running,
+                        status.models.len()
+                    ),
+                    Err(error) => log::warn!("Ollama status check failed: {error}"),
+                }
+                let _ = events.send(Event::OllamaStatus(result));
+            }
             Command::Translate {
                 request_id,
                 text,
-                source,
-                target,
+                jobs,
             } => {
-                let started = Instant::now();
                 log::info!(
-                    "translate request {request_id}: {} -> {}, {} chars",
-                    source.code(),
-                    target.code(),
+                    "translate request {request_id}: {} provider(s), {} chars",
+                    jobs.len(),
                     text.chars().count()
                 );
-                let result = self.translate(&text, source, target);
-                match &result {
-                    Ok(translation) => log::info!(
-                        "translate request {request_id} succeeded in {}ms (detected {:?})",
-                        started.elapsed().as_millis(),
-                        translation.detected_source_language
-                    ),
-                    Err(error) => log::warn!(
-                        "translate request {request_id} failed in {}ms: {error}",
-                        started.elapsed().as_millis()
-                    ),
+
+                for job in jobs {
+                    let started = Instant::now();
+                    let (provider, result) = match job {
+                        ProviderJob::DeepL { source, target } => {
+                            (Provider::DeepL, self.translate_deepl(&text, source, target))
+                        }
+                        ProviderJob::Ollama {
+                            source,
+                            target,
+                            model,
+                            register,
+                            context,
+                        } => (
+                            Provider::Ollama,
+                            self.translate_ollama(
+                                &text,
+                                source,
+                                target,
+                                &model,
+                                register,
+                                context.as_deref(),
+                            ),
+                        ),
+                    };
+                    let elapsed_ms = started.elapsed().as_millis();
+
+                    match &result {
+                        Ok(translation) => log::info!(
+                            "{} translation for request {request_id} succeeded in {elapsed_ms}ms ({} -> {:?})",
+                            provider.label(),
+                            translation.text.chars().count(),
+                            translation.detected_source_language
+                        ),
+                        Err(error) => log::warn!(
+                            "{} translation for request {request_id} failed in {elapsed_ms}ms: {error}",
+                            provider.label()
+                        ),
+                    }
+
+                    let _ = events.send(Event::ProviderTranslation {
+                        request_id,
+                        provider,
+                        result,
+                        elapsed_ms,
+                    });
+                    notify();
                 }
-                let _ = events.send(Event::Translation { request_id, result });
             }
         }
     }
@@ -186,7 +247,7 @@ impl Worker {
     fn load_session(&mut self) -> Result<SessionStatus, ApiError> {
         log::info!("loading saved session");
 
-        let Some(stored) = keychain::load_mcp_session()? else {
+        let Some(stored) = session_store::load_mcp_session()? else {
             log::info!("no saved session");
             return Ok(SessionStatus::signed_out());
         };
@@ -204,7 +265,7 @@ impl Worker {
                 }
             }
             Err(error) if error.kind == ErrorKind::SessionExpired => {
-                let _ = keychain::delete_mcp_session();
+                let _ = session_store::delete_mcp_session();
                 self.session = None;
                 self.client = None;
                 return Ok(SessionStatus::signed_out());
@@ -221,8 +282,6 @@ impl Worker {
     fn sign_in(&mut self) -> Result<SessionStatus, ApiError> {
         let session = mcp::sign_in(self.cancel_sign_in.clone(), &self.http)?;
 
-        // Verify before persisting so a broken token or missing tool does not
-        // leave the app looking signed in.
         let mut client = McpClient::new(&session)?;
         client.verify()?;
 
@@ -241,47 +300,46 @@ impl Worker {
         self.session = None;
         self.client = None;
 
-        keychain::delete_mcp_session()?;
+        session_store::delete_mcp_session()?;
         Ok(SessionStatus::signed_out())
     }
 
-    fn translate(
+    fn ollama_status(&mut self) -> Result<OllamaStatus, ApiError> {
+        fetch_status()
+    }
+
+    fn translate_deepl(
         &mut self,
         text: &str,
         source: Language,
         target: Language,
     ) -> Result<Translation, ApiError> {
-        if text.trim().is_empty() {
-            return Err(ApiError::input("There is no text to translate."));
-        }
-
-        if !is_supported_pair(source, target) {
-            return Err(ApiError::input(
-                "That language pair is not supported by this version of the app.",
-            ));
-        }
-
-        let characters = text.chars().count();
-        if characters > MCP_MAX_TEXT_CHARS {
-            return Err(ApiError::input(format!(
-                "That text is {characters} characters long. DeepL's MCP Free tier accepts up to {MCP_MAX_TEXT_CHARS} characters per request."
-            )));
-        }
+        validate_request(text, source, target)?;
 
         let refresh = {
-            let session = self.session.as_mut().ok_or_else(ApiError::not_configured)?;
+            let session = self.session.as_mut().ok_or_else(|| {
+                ApiError::new(
+                    ErrorKind::NotConfigured,
+                    "Sign in with DeepL to translate with DeepL.",
+                )
+            })?;
             mcp::refresh_session(&self.http, session)
         };
 
         match refresh {
             Ok(true) => {
-                let refreshed = self.session.clone().ok_or_else(ApiError::not_configured)?;
+                let refreshed = self.session.clone().ok_or_else(|| {
+                    ApiError::new(
+                        ErrorKind::NotConfigured,
+                        "Sign in with DeepL to translate with DeepL.",
+                    )
+                })?;
                 self.save_session(&refreshed)?;
                 self.client = Some(McpClient::new(&refreshed)?);
             }
             Ok(false) => {}
             Err(error) if error.kind == ErrorKind::SessionExpired => {
-                let _ = keychain::delete_mcp_session();
+                let _ = session_store::delete_mcp_session();
                 self.session = None;
                 self.client = None;
                 return Err(ApiError::auth_expired());
@@ -289,7 +347,12 @@ impl Worker {
             Err(error) => return Err(error),
         }
 
-        let session = self.session.as_ref().ok_or_else(ApiError::not_configured)?;
+        let session = self.session.as_ref().ok_or_else(|| {
+            ApiError::new(
+                ErrorKind::NotConfigured,
+                "Sign in with DeepL to translate with DeepL.",
+            )
+        })?;
 
         if self.client.is_none() {
             self.client = Some(McpClient::new(session)?);
@@ -303,13 +366,28 @@ impl Worker {
 
         if let Err(error) = &result {
             if error.kind == ErrorKind::SessionExpired {
-                let _ = keychain::delete_mcp_session();
+                let _ = session_store::delete_mcp_session();
                 self.session = None;
                 self.client = None;
             }
         }
 
         result
+    }
+
+    fn translate_ollama(
+        &mut self,
+        text: &str,
+        source: Language,
+        target: Language,
+        model: &str,
+        register: Register,
+        context: Option<&str>,
+    ) -> Result<Translation, ApiError> {
+        validate_request(text, source, target)?;
+
+        let client = OllamaClient::new(model)?;
+        client.translate(text, source, target, register, context)
     }
 
     fn install_session(&mut self, session: McpSession) -> Result<(), ApiError> {
@@ -323,6 +401,27 @@ impl Worker {
         let encoded = serde_json::to_string(session).map_err(|error| {
             ApiError::storage(format!("Could not encode the DeepL session: {error}"))
         })?;
-        keychain::save_mcp_session(&encoded)
+        session_store::save_mcp_session(&encoded)
     }
+}
+
+fn validate_request(text: &str, source: Language, target: Language) -> Result<(), ApiError> {
+    if text.trim().is_empty() {
+        return Err(ApiError::input("There is no text to translate."));
+    }
+
+    if !is_supported_pair(source, target) {
+        return Err(ApiError::input(
+            "That language pair is not supported by this version of the app.",
+        ));
+    }
+
+    let characters = text.chars().count();
+    if characters > MAX_TRANSLATION_CHARS {
+        return Err(ApiError::input(format!(
+            "That text is {characters} characters long. Requests are limited to {MAX_TRANSLATION_CHARS} characters."
+        )));
+    }
+
+    Ok(())
 }

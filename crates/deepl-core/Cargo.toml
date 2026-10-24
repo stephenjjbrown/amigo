@@ -13,15 +13,3 @@ base64 = "0.22"
 getrandom = "0.4"
 sha2 = "0.10"
 url = "2"
-
-# Credentials (OAuth tokens) live in the OS credential store, not on disk.
-# Each platform uses its native backend; adding a platform later means adding
-# its feature here.
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service"] }

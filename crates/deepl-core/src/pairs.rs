@@ -54,6 +54,25 @@ impl Language {
             Self::Spanish => "ES",
         }
     }
+
+    /// Lowercase code used in the TranslateGemma prompt.
+    pub fn ollama_source_code(self) -> &'static str {
+        match self {
+            Self::Portuguese | Self::PortuguesePortugal | Self::PortugueseBrazil => "pt",
+            Self::English => "en",
+            Self::Spanish => "es",
+        }
+    }
+
+    /// Lowercase target code used in the TranslateGemma prompt.
+    pub fn ollama_target_code(self) -> &'static str {
+        match self {
+            Self::Portuguese | Self::PortuguesePortugal => "pt-PT",
+            Self::PortugueseBrazil => "pt-BR",
+            Self::English => "en",
+            Self::Spanish => "es",
+        }
+    }
 }
 
 pub const SOURCE_LANGUAGES: &[Language] =
@@ -210,6 +229,17 @@ mod tests {
         assert_eq!(Language::PortugueseBrazil.mcp_target_code(), "PT-BR");
         assert_eq!(Language::English.mcp_target_code(), "EN");
         assert_eq!(Language::Spanish.mcp_target_code(), "ES");
+    }
+
+    #[test]
+    fn maps_languages_to_ollama_codes() {
+        assert_eq!(Language::Portuguese.ollama_source_code(), "pt");
+        assert_eq!(Language::English.ollama_source_code(), "en");
+        assert_eq!(Language::Spanish.ollama_source_code(), "es");
+        assert_eq!(Language::PortuguesePortugal.ollama_target_code(), "pt-PT");
+        assert_eq!(Language::PortugueseBrazil.ollama_target_code(), "pt-BR");
+        assert_eq!(Language::English.ollama_target_code(), "en");
+        assert_eq!(Language::Spanish.ollama_target_code(), "es");
     }
 
     #[test]
