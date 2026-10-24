@@ -30,6 +30,15 @@ const INPUT_MARGIN: Margin = Margin {
     bottom: 8,
 };
 
+/// Provider dialog size, fixed rather than fitted to its content.
+///
+/// Resizing a wgpu-backed window on macOS leaves one frame where the compositor
+/// stretches the previous drawable to the new size, which shows as a blip when
+/// switching Single/Multi. That is egui#8229, fixed in egui/eframe 0.35+; we are
+/// pinned to 0.32, so the window keeps one height that fits the tallest layout
+/// and Single mode simply has some empty space. Revisit with an eframe upgrade.
+const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 620.0);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 enum TranslationMode {
     #[default]
@@ -1784,7 +1793,7 @@ impl TranslationAmigoApp {
         } else {
             "Provider settings"
         };
-        let size = Vec2::new(470.0, 620.0);
+        let size = PROVIDER_DIALOG_SIZE;
         let ollama_status = self.ollama_status.clone();
         let signed_in = self.signed_in();
 
@@ -1807,14 +1816,14 @@ impl TranslationAmigoApp {
         let mut save = false;
         let mut close = false;
 
-        let mut body = |ui: &mut Ui| -> (bool, bool, f32) {
+        let mut body = |ui: &mut Ui| -> (bool, bool) {
             let mut save_clicked = false;
             let mut cancel_clicked = false;
             let palette = Palette::for_theme(ui.ctx().style().visuals.dark_mode);
             ui.set_width(size.x - 32.0);
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
 
-            let content = ui.scope(|ui| {
+            ui.scope(|ui| {
                 if adding {
                     let options = [(Provider::DeepL, "DeepL"), (Provider::Ollama, "Ollama")];
                     if tab_bar(ui, &options, &mut dialog.draft.kind, &palette)
@@ -1926,7 +1935,7 @@ impl TranslationAmigoApp {
                 });
             });
 
-            (save_clicked, cancel_clicked, content.response.rect.height())
+            (save_clicked, cancel_clicked)
         };
 
         ctx.show_viewport_immediate(
@@ -1940,46 +1949,24 @@ impl TranslationAmigoApp {
                             .collapsible(false)
                             .resizable(false)
                             .show(ctx, |ui| {
-                                let (saved, cancelled, _) = body(ui);
+                                let (saved, cancelled) = body(ui);
                                 save |= saved;
                                 close |= cancelled;
                             });
                     }
                     _ => {
                         let palette = Palette::for_theme(ctx.style().visuals.dark_mode);
-                        let content_height = egui::CentralPanel::default()
+                        egui::CentralPanel::default()
                             .frame(
                                 Frame::new()
                                     .fill(palette.surface)
                                     .inner_margin(Margin::same(16)),
                             )
                             .show(ctx, |ui| {
-                                let (saved, cancelled, height) = body(ui);
+                                let (saved, cancelled) = body(ui);
                                 save |= saved;
                                 close |= cancelled;
-                                height
-                            })
-                            .inner;
-
-                        // Fit the window to the content, so it grows and shrinks as
-                        // the mode and provider change.
-                        let monitor_height = ctx
-                            .input(|input| input.viewport().monitor_size)
-                            .map(|size| size.y)
-                            .unwrap_or(900.0);
-                        let target = (content_height + 34.0).clamp(320.0, monitor_height * 0.9);
-                        let current = ctx
-                            .input(|input| input.viewport().inner_rect)
-                            .map(|rect| rect.height());
-
-                        if current
-                            .map(|current| (current - target).abs() > 4.0)
-                            .unwrap_or(true)
-                        {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
-                                size.x, target,
-                            )));
-                        }
+                            });
                     }
                 }
 
