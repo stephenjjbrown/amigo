@@ -142,6 +142,7 @@ impl Palette {
         };
 
         visuals.override_text_color = Some(self.text);
+        visuals.weak_text_alpha = 0.5;
         visuals.panel_fill = self.bg;
         visuals.window_fill = self.surface;
         visuals.extreme_bg_color = self.surface_muted;

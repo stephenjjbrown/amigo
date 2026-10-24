@@ -28,14 +28,7 @@ enum TranslationMode {
     Multi,
 }
 
-impl TranslationMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Single => "Single translation",
-            Self::Multi => "Multi translation",
-        }
-    }
-}
+impl TranslationMode {}
 
 /// One configured translation provider in the workspace. The app can hold any
 /// number of these, including several of the same kind.
@@ -1776,7 +1769,7 @@ impl TranslationAmigoApp {
             )
             .show(ctx, |ui| {
                 ui.set_width(dialog_width - 40.0);
-                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
 
                 ui.horizontal(|ui| {
                     ui.label(
@@ -1794,176 +1787,126 @@ impl TranslationAmigoApp {
                         }
                     });
                 });
+                ui.add_space(10.0);
 
-                if adding {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 14.0;
-                        for kind in Provider::ALL {
-                            let selected = dialog.draft.kind == kind;
-                            if ui
-                                .selectable_label(
-                                    selected,
-                                    RichText::new(kind.label()).size(TYPE.body).color(
-                                        if selected {
-                                            palette.text
-                                        } else {
-                                            palette.text_muted
-                                        },
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                dialog.draft.kind = kind;
-                            }
-                        }
-                    });
-                    hairline(ui, palette);
-                }
+                let body_height = (screen.height() - 240.0).max(240.0);
+                ScrollArea::vertical()
+                    .id_salt("provider_dialog_body")
+                    .auto_shrink([false, true])
+                    .max_height(body_height)
+                    .show(ui, |ui| {
+                        ui.set_width(dialog_width - 40.0);
 
-                pair_controls(ui, &mut dialog.draft.pair, dialog.draft.kind, palette);
-
-                if dialog.draft.kind == Provider::Ollama {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("MODEL")
-                            .size(TYPE.micro)
-                            .strong()
-                            .color(palette.text_faint),
-                    );
-                    model_combo(ui, &mut dialog.draft, palette, ollama_status.as_ref());
-
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("TRANSLATION MODE")
-                            .size(TYPE.micro)
-                            .strong()
-                            .color(palette.text_faint),
-                    );
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 14.0;
-                        for mode in [TranslationMode::Single, TranslationMode::Multi] {
-                            let selected = dialog.draft.mode == mode;
-                            if ui
-                                .selectable_label(
-                                    selected,
-                                    RichText::new(mode.label()).size(TYPE.body).color(
-                                        if selected {
-                                            palette.text
-                                        } else {
-                                            palette.text_muted
-                                        },
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                dialog.draft.mode = mode;
-                            }
-                        }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("REGISTER")
-                                .size(TYPE.micro)
-                                .strong()
-                                .color(palette.text_faint),
-                        );
-                        egui::ComboBox::from_id_salt("provider_dialog_register")
-                            .selected_text(
-                                RichText::new(dialog.draft.register.label())
-                                    .size(TYPE.body)
-                                    .color(palette.text),
+                        if adding {
+                            let options =
+                                [(Provider::DeepL, "DeepL"), (Provider::Ollama, "Ollama")];
+                            if segmented_control(
+                                ui,
+                                &options,
+                                &mut dialog.draft.kind,
+                                96.0,
+                                palette,
+                            ) && !allowed_targets_for(
+                                dialog.draft.kind,
+                                dialog.draft.pair.source,
                             )
-                            .width(140.0)
-                            .show_ui(ui, |ui| {
-                                for option in Register::ALL {
-                                    ui.selectable_value(
-                                        &mut dialog.draft.register,
-                                        option,
-                                        option.label(),
-                                    );
-                                }
-                            });
-                    });
+                            .contains(&dialog.draft.pair.target)
+                            {
+                                dialog.draft.pair.target = target_for_source_with(
+                                    dialog.draft.kind,
+                                    dialog.draft.pair.source,
+                                    dialog.draft.pair.target,
+                                );
+                            }
+                            ui.add_space(16.0);
+                        }
 
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("CONTEXT HINT")
-                            .size(TYPE.micro)
-                            .strong()
-                            .color(palette.text_faint),
-                    );
-                    ui.add(
-                        TextEdit::singleline(&mut dialog.draft.context)
-                            .char_limit(300)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("e.g. flirty conversation between friends")
-                            .font(FontId::proportional(TYPE.body)),
-                    );
-                    ui.label(
-                        RichText::new("Optional. Appended to the prompt as context.")
-                            .size(TYPE.caption)
-                            .color(palette.text_faint),
-                    );
+                        pair_controls(ui, &mut dialog.draft.pair, dialog.draft.kind, palette);
 
-                    if dialog.draft.mode == TranslationMode::Multi {
-                        ui.add_space(4.0);
-                        hairline(ui, palette);
-                        ui.add_space(4.0);
+                        if dialog.draft.kind == Provider::Ollama {
+                            ui.add_space(14.0);
+                            form_label(ui, "MODEL", palette);
+                            model_combo(ui, &mut dialog.draft, palette, ollama_status.as_ref());
 
-                        ui.horizontal(|ui| {
+                            ui.add_space(14.0);
+                            form_label(ui, "TRANSLATION MODE", palette);
+                            let modes = [
+                                (TranslationMode::Single, "Single translation"),
+                                (TranslationMode::Multi, "Multi translation"),
+                            ];
+                            segmented_control(ui, &modes, &mut dialog.draft.mode, 148.0, palette);
+
+                            ui.add_space(14.0);
+                            form_label(ui, "REGISTER", palette);
+                            egui::ComboBox::from_id_salt("provider_dialog_register")
+                                .selected_text(
+                                    RichText::new(dialog.draft.register.label())
+                                        .size(TYPE.body)
+                                        .color(palette.text),
+                                )
+                                .width(210.0)
+                                .show_ui(ui, |ui| {
+                                    for option in Register::ALL {
+                                        ui.selectable_value(
+                                            &mut dialog.draft.register,
+                                            option,
+                                            option.label(),
+                                        );
+                                    }
+                                });
+
+                            ui.add_space(14.0);
+                            form_label(ui, "CONTEXT HINT", palette);
+                            ui.add(
+                                TextEdit::singleline(&mut dialog.draft.context)
+                                    .char_limit(300)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("e.g. flirty conversation between friends")
+                                    .font(FontId::proportional(TYPE.body)),
+                            );
                             ui.label(
-                                RichText::new("# OF TRANSLATIONS")
-                                    .size(TYPE.micro)
-                                    .strong()
+                                RichText::new("Optional")
+                                    .size(TYPE.caption)
                                     .color(palette.text_faint),
                             );
-                            ui.add(
-                                egui::Slider::new(&mut dialog.draft.variants, 1..=MAX_VARIANTS)
-                                    .integer(),
-                            );
-                        });
 
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("TEMPERATURE")
-                                    .size(TYPE.micro)
-                                    .strong()
-                                    .color(palette.text_faint),
-                            );
-                            ui.add(
-                                egui::Slider::new(&mut dialog.draft.temperature, 0.0..=2.0)
-                                    .step_by(0.1),
-                            );
-                        });
+                            if dialog.draft.mode == TranslationMode::Multi {
+                                ui.add_space(14.0);
+                                form_label(ui, "# OF TRANSLATIONS", palette);
+                                ui.add(
+                                    egui::Slider::new(&mut dialog.draft.variants, 1..=MAX_VARIANTS)
+                                        .integer(),
+                                );
 
-                        ui.horizontal(|ui| {
+                                ui.add_space(10.0);
+                                form_label(ui, "TEMPERATURE", palette);
+                                ui.add(
+                                    egui::Slider::new(&mut dialog.draft.temperature, 0.0..=2.0)
+                                        .step_by(0.1),
+                                );
+
+                                ui.add_space(10.0);
+                                form_label(ui, "NUCLEUS SAMPLING (TOP_P)", palette);
+                                ui.add(
+                                    egui::Slider::new(&mut dialog.draft.top_p, 0.05..=1.0)
+                                        .step_by(0.05),
+                                );
+                            }
+                        } else if !signed_in {
+                            ui.add_space(14.0);
                             ui.label(
-                                RichText::new("NUCLEUS (TOP_P)")
-                                    .size(TYPE.micro)
-                                    .strong()
-                                    .color(palette.text_faint),
-                            );
-                            ui.add(
-                                egui::Slider::new(&mut dialog.draft.top_p, 0.05..=1.0)
-                                    .step_by(0.05),
-                            );
-                        });
-                    }
-                } else if !signed_in {
-                    ui.label(
                         RichText::new(
                             "Sign in with DeepL in Settings before translating with this provider.",
                         )
                         .size(TYPE.caption)
                         .color(palette.warning),
                     );
-                }
+                        }
+                    });
 
-                ui.add_space(6.0);
+                ui.add_space(10.0);
                 hairline(ui, palette);
-                ui.add_space(6.0);
+                ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
                     let label = if adding { "Add provider" } else { "Save" };
@@ -2035,71 +1978,117 @@ impl eframe::App for TranslationAmigoApp {
 // ------------------------------------------------------------------ widgets
 
 /// Language pair controls shared by the add and edit dialogs.
-fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Palette) {
-    let mut swap = false;
+fn form_label(ui: &mut Ui, text: &str, palette: &Palette) {
+    ui.label(
+        RichText::new(text)
+            .font(semibold(TYPE.micro))
+            .color(palette.text_muted),
+    );
+}
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
+/// A two-or-more option segmented control. The selected segment is raised; the
+/// others stay flush with the container until hovered.
+fn segmented_control<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    options: &[(T, &str)],
+    selected: &mut T,
+    min_width: f32,
+    palette: &Palette,
+) -> bool {
+    let mut changed = false;
 
-        ui.label(
-            RichText::new("From")
-                .size(TYPE.micro)
-                .strong()
-                .color(palette.text_faint),
-        );
+    Frame::new()
+        .fill(palette.surface_muted)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(RADIUS.sm))
+        .inner_margin(Margin::same(3))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal(|ui| {
+                for (value, label) in options {
+                    let is_selected = *selected == *value;
+                    let text = if is_selected {
+                        RichText::new(*label)
+                            .font(semibold(TYPE.small))
+                            .color(palette.text)
+                    } else {
+                        RichText::new(*label)
+                            .size(TYPE.small)
+                            .color(palette.text_muted)
+                    };
 
-        egui::ComboBox::from_id_salt("provider_dialog_source")
-            .selected_text(
-                RichText::new(pair.source.label())
-                    .size(TYPE.body)
-                    .strong()
-                    .color(palette.text),
-            )
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                for language in SOURCE_LANGUAGES {
-                    ui.selectable_value(&mut pair.source, *language, language.label());
-                }
-            });
+                    let mut button = Button::new(text)
+                        .frame(true)
+                        .min_size(Vec2::new(min_width, 26.0));
+                    if is_selected {
+                        button = button.fill(palette.surface_strong);
+                    }
 
-        if !allowed_targets_for(kind, pair.source).contains(&pair.target) {
-            pair.target = target_for_source_with(kind, pair.source, pair.target);
-        }
-
-        ui.add_space(2.0);
-        if swap_button(ui, palette).clicked() {
-            swap = true;
-        }
-        ui.add_space(2.0);
-
-        ui.label(
-            RichText::new("To")
-                .size(TYPE.micro)
-                .strong()
-                .color(palette.text_faint),
-        );
-
-        let allowed = allowed_targets_for(kind, pair.source);
-        egui::ComboBox::from_id_salt("provider_dialog_target")
-            .selected_text(
-                RichText::new(pair.target.label())
-                    .size(TYPE.body)
-                    .strong()
-                    .color(palette.text),
-            )
-            .width(190.0)
-            .show_ui(ui, |ui| {
-                for language in TARGET_LANGUAGES {
-                    if allowed.contains(language) {
-                        ui.selectable_value(&mut pair.target, *language, language.label());
+                    if ui.add(button).clicked() && !is_selected {
+                        *selected = *value;
+                        changed = true;
                     }
                 }
             });
+        });
 
-        if !allowed.contains(&pair.target) {
-            pair.target = target_for_source_with(kind, pair.source, pair.target);
-        }
-    });
+    changed
+}
+
+fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Palette) {
+    let mut swap = false;
+    let allowed = allowed_targets_for(kind, pair.source);
+
+    egui::Grid::new("provider_dialog_pair")
+        .num_columns(3)
+        .spacing(Vec2::new(8.0, 6.0))
+        .show(ui, |ui| {
+            form_label(ui, "FROM", palette);
+            ui.label("");
+            form_label(ui, "TO", palette);
+            ui.end_row();
+
+            egui::ComboBox::from_id_salt("provider_dialog_source")
+                .selected_text(
+                    RichText::new(pair.source.label())
+                        .size(TYPE.body)
+                        .color(palette.text),
+                )
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    for language in SOURCE_LANGUAGES {
+                        ui.selectable_value(&mut pair.source, *language, language.label());
+                    }
+                });
+
+            if !allowed.contains(&pair.target) {
+                pair.target = target_for_source_with(kind, pair.source, pair.target);
+            }
+
+            if swap_button(ui, palette).clicked() {
+                swap = true;
+            }
+
+            egui::ComboBox::from_id_salt("provider_dialog_target")
+                .selected_text(
+                    RichText::new(pair.target.label())
+                        .size(TYPE.body)
+                        .color(palette.text),
+                )
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    for language in TARGET_LANGUAGES {
+                        if allowed.contains(language) {
+                            ui.selectable_value(&mut pair.target, *language, language.label());
+                        }
+                    }
+                });
+            ui.end_row();
+        });
+
+    if !allowed.contains(&pair.target) {
+        pair.target = target_for_source_with(kind, pair.source, pair.target);
+    }
 
     if swap {
         if let Some(next) = swap_pair(*pair) {
@@ -2462,18 +2451,30 @@ fn secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
     )
 }
 
-/// Close control for the dialogs. Larger than a text button because the glyph is
-/// the only hit target.
+/// Close control for the dialogs. Quiet until hovered, but with a large
+/// hit target.
 fn close_button(ui: &mut Ui, palette: &Palette) -> Response {
-    ui.add(
-        Button::new(
-            RichText::new("×")
-                .size(TYPE.display)
-                .color(palette.text_secondary),
-        )
-        .frame(true)
-        .min_size(Vec2::new(40.0, 40.0)),
-    )
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(36.0, 36.0), Sense::click());
+    let hovered = response.hovered();
+
+    if hovered {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(RADIUS.sm), palette.surface_strong);
+    }
+
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        "×",
+        FontId::proportional(TYPE.display),
+        if hovered {
+            palette.text
+        } else {
+            palette.text_secondary
+        },
+    );
+
+    response
 }
 
 fn danger_secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
