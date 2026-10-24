@@ -250,6 +250,9 @@ struct ProviderDialog {
     /// `None` while adding a new provider.
     editing: Option<u64>,
     draft: ProviderSlot,
+    /// Where the OS window was placed when it opened. Sent once, so the window
+    /// can be dragged afterwards.
+    position: Option<egui::Pos2>,
 }
 
 pub struct TranslationAmigoApp {
@@ -266,6 +269,7 @@ pub struct TranslationAmigoApp {
     ollama_status_error: Option<String>,
 
     settings_open: bool,
+    settings_position: Option<egui::Pos2>,
     signing_in: bool,
     settings_error: Option<String>,
     diagnostics_copied_at: Option<f64>,
@@ -313,6 +317,7 @@ impl TranslationAmigoApp {
             ollama_checking: true,
             ollama_status_error: None,
             settings_open: false,
+            settings_position: None,
             signing_in: false,
             settings_error: None,
             diagnostics_copied_at: None,
@@ -465,7 +470,11 @@ impl TranslationAmigoApp {
                 ..ProviderSlot::default()
             });
 
-        self.provider_dialog = Some(ProviderDialog { editing, draft });
+        self.provider_dialog = Some(ProviderDialog {
+            editing,
+            draft,
+            position: None,
+        });
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -605,6 +614,7 @@ impl TranslationAmigoApp {
             return;
         }
         self.settings_open = true;
+        self.settings_position = None;
         self.settings_error = None;
     }
 
@@ -933,7 +943,7 @@ impl TranslationAmigoApp {
         };
         let action_height = 48.0;
         let panes_height =
-            (ui.available_height() - action_height - error_height - spacing - 16.0).max(160.0);
+            (ui.available_height() - action_height - error_height - spacing - 8.0).max(160.0);
         let gap = 14.0;
         let width = ui.available_width();
 
@@ -996,7 +1006,7 @@ impl TranslationAmigoApp {
         let width = ui.available_width();
         let characters = self.character_count();
         let over_limit = self.over_limit();
-        let body_height = (height - 90.0).max(80.0);
+        let body_height = (height - 78.0).max(80.0);
         let rows = ((body_height - 24.0) / 20.0).max(4.0) as usize;
         let mut source_text = std::mem::take(&mut self.source_text);
         let mut focus_source = self.focus_source;
@@ -1054,7 +1064,7 @@ impl TranslationAmigoApp {
                 hairline(ui, palette);
 
                 ui.allocate_ui_with_layout(
-                    Vec2::new(width, 44.0),
+                    Vec2::new(width, 38.0),
                     Layout::left_to_right(Align::Center),
                     |ui| {
                         ui.add_space(12.0);
@@ -1308,31 +1318,15 @@ impl TranslationAmigoApp {
 
     // ---------------------------------------------------------------- settings
 
-    fn ui_settings(&mut self, ctx: &egui::Context, palette: &Palette) {
+    fn ui_settings(&mut self, ctx: &egui::Context) {
         // DeepL tokens are stored in a protected local session file for this
         // prototype. Logs never include tokens or translated text.
         if !self.settings_open {
             return;
         }
 
-        let screen = ctx.screen_rect();
-        let dialog_width = (screen.width() - 48.0).clamp(320.0, 460.0);
+        let size = Vec2::new(480.0, 700.0);
         let mut close = false;
-
-        egui::Area::new(Id::new("settings_backdrop"))
-            .order(egui::Order::Middle)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
-                ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::same(0),
-                    Color32::from_black_alpha(150),
-                );
-                if response.clicked() {
-                    close = true;
-                }
-            });
 
         let signed_in = self.signed_in();
         let signing_in = self.signing_in;
@@ -1356,43 +1350,30 @@ impl TranslationAmigoApp {
         let mut diagnostics_requested = false;
         let mut verbose_changed = false;
 
-        egui::Window::new("settings")
-            .id(Id::new("settings_window"))
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .order(egui::Order::Foreground)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(dialog_width)
-            .frame(
-                Frame::new()
-                    .fill(palette.surface)
-                    .stroke(Stroke::new(1.0_f32, palette.border_strong))
-                    .corner_radius(CornerRadius::same(RADIUS.lg))
-                    .inner_margin(Margin::same(20)),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(dialog_width - 40.0);
-                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("Settings")
+            .with_inner_size(size)
+            .with_resizable(false)
+            .with_active(true);
 
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Settings")
-                            .font(semibold(TYPE.title))
-                            .color(palette.text),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if close_button(ui, palette).clicked() {
-                            close = true;
-                        }
-                    });
-                });
+        // Placed once, centred over the main window.
+        if self.settings_position.is_none() {
+            if let Some(parent) = ctx.input(|input| input.viewport().outer_rect) {
+                let position = parent.center() - size / 2.0;
+                self.settings_position = Some(position);
+                builder = builder.with_position(position);
+            }
+        }
 
-                ScrollArea::vertical()
-                    .id_salt("settings_scroll")
-                    .max_height((screen.height() - 100.0).max(280.0))
-                    .show(ui, |ui| {
-                        ui.add_space(2.0);
+        let mut body = |ui: &mut Ui| -> (bool, f32) {
+            let palette = &Palette::for_theme(ui.ctx().style().visuals.dark_mode);
+            let mut close_clicked = false;
+
+            ui.set_width(size.x - 32.0);
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+
+            let content = ui.scope(|ui| {
+                ui.add_space(2.0);
 
                         ui.label(
                             RichText::new("DEEPL ACCOUNT")
@@ -1669,7 +1650,7 @@ impl TranslationAmigoApp {
                                 Layout::right_to_left(Align::Center),
                                 |ui| {
                                     if secondary_button(ui, "Close", palette).clicked() {
-                                        close = true;
+                                        close_clicked = true;
                                     }
                                     ui.add_space(4.0);
                                     let label = if diagnostics_copied {
@@ -1684,7 +1665,66 @@ impl TranslationAmigoApp {
                             );
                         });
                     });
-            });
+
+            (close_clicked, content.response.rect.height())
+        };
+
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("settings_window"),
+            builder,
+            |ctx, class| {
+                match class {
+                    egui::ViewportClass::Embedded => {
+                        egui::Window::new("Settings")
+                            .id(Id::new("settings_embedded"))
+                            .collapsible(false)
+                            .resizable(false)
+                            .show(ctx, |ui| {
+                                close |= body(ui).0;
+                            });
+                    }
+                    _ => {
+                        let palette = Palette::for_theme(ctx.style().visuals.dark_mode);
+                        let content_height = egui::CentralPanel::default()
+                            .frame(
+                                Frame::new()
+                                    .fill(palette.surface)
+                                    .inner_margin(Margin::same(16)),
+                            )
+                            .show(ctx, |ui| {
+                                let (closed, height) = body(ui);
+                                close |= closed;
+                                height
+                            })
+                            .inner;
+
+                        // Fit the window to the content: 16 px of frame padding top
+                        // and bottom, clamped so it always stays on screen.
+                        let monitor_height = ctx
+                            .input(|input| input.viewport().monitor_size)
+                            .map(|size| size.y)
+                            .unwrap_or(900.0);
+                        let target = (content_height + 34.0).clamp(280.0, monitor_height * 0.9);
+                        let current = ctx
+                            .input(|input| input.viewport().inner_rect)
+                            .map(|rect| rect.height());
+
+                        if current
+                            .map(|current| (current - target).abs() > 4.0)
+                            .unwrap_or(true)
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
+                                size.x, target,
+                            )));
+                        }
+                    }
+                }
+
+                if ctx.input(|input| input.viewport().close_requested()) {
+                    close = true;
+                }
+            },
+        );
 
         if sign_in {
             self.settings_error = None;
@@ -1733,197 +1773,227 @@ impl TranslationAmigoApp {
             self.focus_source = true;
         }
     }
-    fn ui_provider_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
+    fn ui_provider_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.provider_dialog.clone() else {
             return;
         };
 
-        let screen = ctx.screen_rect();
-        let dialog_width = (screen.width() - 48.0).clamp(360.0, 520.0);
         let adding = dialog.editing.is_none();
+        let title = if adding {
+            "Add translation provider"
+        } else {
+            "Provider settings"
+        };
+        let size = Vec2::new(470.0, 620.0);
         let ollama_status = self.ollama_status.clone();
         let signed_in = self.signed_in();
-        let mut close = false;
+
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title(title)
+            .with_inner_size(size)
+            .with_resizable(false)
+            .with_active(true);
+
+        // Send the position exactly once, centred over the main window: sending it
+        // every frame would pin the window and stop it being dragged.
+        if dialog.position.is_none() {
+            if let Some(parent) = ctx.input(|input| input.viewport().outer_rect) {
+                let position = parent.center() - size / 2.0;
+                dialog.position = Some(position);
+                builder = builder.with_position(position);
+            }
+        }
+
         let mut save = false;
+        let mut close = false;
 
-        egui::Area::new(Id::new("provider_dialog_backdrop"))
-            .order(egui::Order::Middle)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
-                ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::same(0),
-                    Color32::from_black_alpha(150),
-                );
-                if response.clicked() {
-                    close = true;
+        let mut body = |ui: &mut Ui| -> (bool, bool, f32) {
+            let mut save_clicked = false;
+            let mut cancel_clicked = false;
+            let palette = Palette::for_theme(ui.ctx().style().visuals.dark_mode);
+            ui.set_width(size.x - 32.0);
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+
+            let content = ui.scope(|ui| {
+                if adding {
+                    let options = [(Provider::DeepL, "DeepL"), (Provider::Ollama, "Ollama")];
+                    if tab_bar(ui, &options, &mut dialog.draft.kind, &palette)
+                        && !allowed_targets_for(dialog.draft.kind, dialog.draft.pair.source)
+                            .contains(&dialog.draft.pair.target)
+                    {
+                        dialog.draft.pair.target = target_for_source_with(
+                            dialog.draft.kind,
+                            dialog.draft.pair.source,
+                            dialog.draft.pair.target,
+                        );
+                    }
                 }
-            });
 
-        egui::Window::new("provider_dialog")
-            .id(Id::new("provider_dialog_window"))
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .order(egui::Order::Foreground)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(dialog_width)
-            .frame(
-                Frame::new()
-                    .fill(palette.surface)
-                    .stroke(Stroke::new(1.0_f32, palette.border_strong))
-                    .corner_radius(CornerRadius::same(RADIUS.lg))
-                    .inner_margin(Margin::same(16)),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(dialog_width - 32.0);
-                ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+                pair_controls(ui, &mut dialog.draft.pair, dialog.draft.kind, &palette);
 
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(if adding {
-                            "Add translation provider"
-                        } else {
-                            "Provider settings"
-                        })
-                        .font(semibold(TYPE.title))
-                        .color(palette.text),
+                if dialog.draft.kind == Provider::Ollama {
+                    ui.add_space(14.0);
+                    form_label(ui, "MODEL", &palette);
+                    model_combo(ui, &mut dialog.draft, &palette, ollama_status.as_ref());
+
+                    ui.add_space(14.0);
+                    form_label(ui, "TRANSLATION MODE", &palette);
+                    let modes = [
+                        (TranslationMode::Single, "Single translation"),
+                        (TranslationMode::Multi, "Multi translation"),
+                    ];
+                    segmented_control(ui, &modes, &mut dialog.draft.mode, 148.0, &palette);
+
+                    ui.add_space(14.0);
+                    form_label(ui, "REGISTER", &palette);
+                    egui::ComboBox::from_id_salt("provider_dialog_register")
+                        .selected_text(
+                            RichText::new(dialog.draft.register.label())
+                                .size(TYPE.body)
+                                .color(palette.text),
+                        )
+                        .width(210.0)
+                        .show_ui(ui, |ui| {
+                            for option in Register::ALL {
+                                ui.selectable_value(
+                                    &mut dialog.draft.register,
+                                    option,
+                                    option.label(),
+                                );
+                            }
+                        });
+
+                    ui.add_space(14.0);
+                    form_label(ui, "CONTEXT HINT", &palette);
+                    ui.add(
+                        TextEdit::singleline(&mut dialog.draft.context)
+                            .char_limit(300)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("A chill conversation between close friends in Lisbon.")
+                            .font(FontId::proportional(TYPE.body))
+                            .margin(INPUT_MARGIN),
                     );
-                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                        if close_button(ui, palette).clicked() {
-                            close = true;
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-                hairline(ui, palette);
-                ui.add_space(12.0);
+                    ui.label(
+                        RichText::new("Optional")
+                            .size(TYPE.caption)
+                            .color(palette.text_faint),
+                    );
 
-                let body_height = (screen.height() - 240.0).max(240.0);
-                ScrollArea::vertical()
-                    .id_salt("provider_dialog_body")
-                    .auto_shrink([false, true])
-                    .max_height(body_height)
-                    .show(ui, |ui| {
-                        ui.set_width(dialog_width - 32.0);
+                    if dialog.draft.mode == TranslationMode::Multi {
+                        ui.add_space(14.0);
+                        form_label(ui, "# OF TRANSLATIONS", &palette);
+                        ui.add(
+                            egui::Slider::new(&mut dialog.draft.variants, 1..=MAX_VARIANTS)
+                                .integer(),
+                        );
 
-                        if adding {
-                            let options =
-                                [(Provider::DeepL, "DeepL"), (Provider::Ollama, "Ollama")];
-                            if tab_bar(ui, &options, &mut dialog.draft.kind, palette)
-                                && !allowed_targets_for(dialog.draft.kind, dialog.draft.pair.source)
-                                    .contains(&dialog.draft.pair.target)
-                            {
-                                dialog.draft.pair.target = target_for_source_with(
-                                    dialog.draft.kind,
-                                    dialog.draft.pair.source,
-                                    dialog.draft.pair.target,
-                                );
-                            }
-                            ui.add_space(16.0);
-                        }
+                        ui.add_space(10.0);
+                        form_label(ui, "TEMPERATURE", &palette);
+                        ui.add(
+                            egui::Slider::new(&mut dialog.draft.temperature, 0.0..=2.0)
+                                .step_by(0.1),
+                        );
 
-                        pair_controls(ui, &mut dialog.draft.pair, dialog.draft.kind, palette);
-
-                        if dialog.draft.kind == Provider::Ollama {
-                            ui.add_space(14.0);
-                            form_label(ui, "MODEL", palette);
-                            model_combo(ui, &mut dialog.draft, palette, ollama_status.as_ref());
-
-                            ui.add_space(14.0);
-                            form_label(ui, "TRANSLATION MODE", palette);
-                            let modes = [
-                                (TranslationMode::Single, "Single translation"),
-                                (TranslationMode::Multi, "Multi translation"),
-                            ];
-                            segmented_control(ui, &modes, &mut dialog.draft.mode, 148.0, palette);
-
-                            ui.add_space(14.0);
-                            form_label(ui, "REGISTER", palette);
-                            egui::ComboBox::from_id_salt("provider_dialog_register")
-                                .selected_text(
-                                    RichText::new(dialog.draft.register.label())
-                                        .size(TYPE.body)
-                                        .color(palette.text),
-                                )
-                                .width(210.0)
-                                .show_ui(ui, |ui| {
-                                    for option in Register::ALL {
-                                        ui.selectable_value(
-                                            &mut dialog.draft.register,
-                                            option,
-                                            option.label(),
-                                        );
-                                    }
-                                });
-
-                            ui.add_space(14.0);
-                            form_label(ui, "CONTEXT HINT", palette);
-                            ui.add(
-                                TextEdit::singleline(&mut dialog.draft.context)
-                                    .char_limit(300)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text(
-                                        "A chill conversation between close friends in Lisbon.",
-                                    )
-                                    .font(FontId::proportional(TYPE.body))
-                                    .margin(INPUT_MARGIN),
-                            );
-                            ui.label(
-                                RichText::new("Optional")
-                                    .size(TYPE.caption)
-                                    .color(palette.text_faint),
-                            );
-
-                            if dialog.draft.mode == TranslationMode::Multi {
-                                ui.add_space(14.0);
-                                form_label(ui, "# OF TRANSLATIONS", palette);
-                                ui.add(
-                                    egui::Slider::new(&mut dialog.draft.variants, 1..=MAX_VARIANTS)
-                                        .integer(),
-                                );
-
-                                ui.add_space(10.0);
-                                form_label(ui, "TEMPERATURE", palette);
-                                ui.add(
-                                    egui::Slider::new(&mut dialog.draft.temperature, 0.0..=2.0)
-                                        .step_by(0.1),
-                                );
-
-                                ui.add_space(10.0);
-                                form_label(ui, "NUCLEUS SAMPLING (TOP_P)", palette);
-                                ui.add(
-                                    egui::Slider::new(&mut dialog.draft.top_p, 0.05..=1.0)
-                                        .step_by(0.05),
-                                );
-                            }
-                        } else if !signed_in {
-                            ui.add_space(14.0);
-                            ui.label(
+                        ui.add_space(10.0);
+                        form_label(ui, "NUCLEUS SAMPLING (TOP_P)", &palette);
+                        ui.add(
+                            egui::Slider::new(&mut dialog.draft.top_p, 0.05..=1.0).step_by(0.05),
+                        );
+                    }
+                } else if !signed_in {
+                    ui.add_space(14.0);
+                    ui.label(
                         RichText::new(
                             "Sign in with DeepL in Settings before translating with this provider.",
                         )
                         .size(TYPE.caption)
                         .color(palette.warning),
                     );
-                        }
-                    });
+                }
 
                 ui.add_space(10.0);
-                hairline(ui, palette);
+                hairline(ui, &palette);
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
                     let label = if adding { "Add provider" } else { "Save" };
-                    if primary_button(ui, label, true, palette).clicked() {
-                        save = true;
+                    if primary_button(ui, label, true, &palette).clicked() {
+                        save_clicked = true;
                     }
-                    if secondary_button(ui, "Cancel", palette).clicked() {
-                        close = true;
+                    if secondary_button(ui, "Cancel", &palette).clicked() {
+                        cancel_clicked = true;
                     }
                 });
             });
+
+            (save_clicked, cancel_clicked, content.response.rect.height())
+        };
+
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("provider_dialog_window"),
+            builder,
+            |ctx, class| {
+                match class {
+                    egui::ViewportClass::Embedded => {
+                        egui::Window::new(title)
+                            .id(Id::new("provider_dialog_embedded"))
+                            .collapsible(false)
+                            .resizable(false)
+                            .show(ctx, |ui| {
+                                let (saved, cancelled, _) = body(ui);
+                                save |= saved;
+                                close |= cancelled;
+                            });
+                    }
+                    _ => {
+                        let palette = Palette::for_theme(ctx.style().visuals.dark_mode);
+                        let content_height = egui::CentralPanel::default()
+                            .frame(
+                                Frame::new()
+                                    .fill(palette.surface)
+                                    .inner_margin(Margin::same(16)),
+                            )
+                            .show(ctx, |ui| {
+                                let (saved, cancelled, height) = body(ui);
+                                save |= saved;
+                                close |= cancelled;
+                                height
+                            })
+                            .inner;
+
+                        // Fit the window to the content, so it grows and shrinks as
+                        // the mode and provider change.
+                        let monitor_height = ctx
+                            .input(|input| input.viewport().monitor_size)
+                            .map(|size| size.y)
+                            .unwrap_or(900.0);
+                        let target = (content_height + 34.0).clamp(320.0, monitor_height * 0.9);
+                        let current = ctx
+                            .input(|input| input.viewport().inner_rect)
+                            .map(|rect| rect.height());
+
+                        if current
+                            .map(|current| (current - target).abs() > 4.0)
+                            .unwrap_or(true)
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
+                                size.x, target,
+                            )));
+                        }
+                    }
+                }
+
+                close |= ctx.input(|input| input.viewport().close_requested());
+
+                // Immediate viewports are rendered during the parent's frame, so the
+                // parent has to be woken for the child to redraw. egui already wakes on
+                // input; this covers held pointers (slider drags) without repainting the
+                // whole app every frame while the dialog is merely open.
+                if ctx.input(|input| input.pointer.any_down()) {
+                    ctx.request_repaint();
+                }
+            },
+        );
 
         if save {
             self.save_slot(dialog.draft.clone());
@@ -1972,8 +2042,8 @@ impl eframe::App for TranslationAmigoApp {
             }))
             .show(ctx, |ui| self.ui_root(ui, ctx, &palette));
 
-        self.ui_settings(ctx, &palette);
-        self.ui_provider_dialog(ctx, &palette);
+        self.ui_settings(ctx);
+        self.ui_provider_dialog(ctx);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2490,7 +2560,7 @@ fn pane_header(
     palette: &Palette,
 ) {
     ui.allocate_ui_with_layout(
-        Vec2::new(width, 44.0),
+        Vec2::new(width, 38.0),
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.add_space(16.0);
@@ -2579,32 +2649,6 @@ fn secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
         .frame(true)
         .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
     )
-}
-
-/// Close control for the dialogs. Quiet until hovered, but with a large
-/// hit target.
-fn close_button(ui: &mut Ui, palette: &Palette) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(32.0, 32.0), Sense::click());
-    let hovered = response.hovered();
-
-    if hovered {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(RADIUS.sm), palette.surface_strong);
-    }
-
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        "×",
-        FontId::proportional(TYPE.glyph),
-        if hovered {
-            palette.text
-        } else {
-            palette.text_secondary
-        },
-    );
-
-    response
 }
 
 fn danger_secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {

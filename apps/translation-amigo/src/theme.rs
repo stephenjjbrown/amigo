@@ -18,9 +18,9 @@ pub struct Radii {
 }
 
 pub const RADIUS: Radii = Radii {
-    sm: 8,
-    md: 12,
-    lg: 16,
+    sm: 4,
+    md: 6,
+    lg: 8,
     pill: 255,
 };
 
@@ -42,8 +42,6 @@ pub struct TypeScale {
     pub title: f32,
     /// The app name.
     pub display: f32,
-    /// Icon glyphs inside buttons.
-    pub glyph: f32,
 }
 
 pub const TYPE: TypeScale = TypeScale {
@@ -55,7 +53,6 @@ pub const TYPE: TypeScale = TypeScale {
     large: 14.0,
     title: 15.5,
     display: 20.0,
-    glyph: 24.0,
 };
 
 const SEMIBOLD: &str = "semibold";
