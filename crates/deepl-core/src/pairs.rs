@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::provider::Provider;
+
 /// DeepL accepts up to 128 KiB of text per request; keep a margin below that.
 pub const MAX_TEXT_CHARS: usize = 100_000;
 
@@ -10,6 +12,7 @@ pub enum Language {
     Spanish,
     PortuguesePortugal,
     PortugueseBrazil,
+    PortugueseAngola,
 }
 
 impl Language {
@@ -21,6 +24,7 @@ impl Language {
             Self::Spanish => "ES",
             Self::PortuguesePortugal => "PT-PT",
             Self::PortugueseBrazil => "PT-BR",
+            Self::PortugueseAngola => "PT-AO",
         }
     }
 
@@ -31,13 +35,17 @@ impl Language {
             Self::Spanish => "Spanish",
             Self::PortuguesePortugal => "Portuguese (Portugal)",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::PortugueseAngola => "Portuguese (Angola)",
         }
     }
 
     /// DeepL language code accepted by the hosted MCP `translate-text` tool.
     pub fn mcp_source_code(self) -> &'static str {
         match self {
-            Self::Portuguese | Self::PortuguesePortugal | Self::PortugueseBrazil => "PT",
+            Self::Portuguese
+            | Self::PortuguesePortugal
+            | Self::PortugueseBrazil
+            | Self::PortugueseAngola => "PT",
             Self::English => "EN",
             Self::Spanish => "ES",
         }
@@ -46,9 +54,12 @@ impl Language {
     /// DeepL language code accepted by the hosted MCP tool as a target. The
     /// region must be explicit for PT, otherwise the service defaults to
     /// Brazilian Portuguese.
+    ///
+    /// DeepL has no Angolan Portuguese target, so that pair is never offered for
+    /// a DeepL provider.
     pub fn mcp_target_code(self) -> &'static str {
         match self {
-            Self::Portuguese | Self::PortuguesePortugal => "PT-PT",
+            Self::Portuguese | Self::PortuguesePortugal | Self::PortugueseAngola => "PT-PT",
             Self::PortugueseBrazil => "PT-BR",
             Self::English => "EN",
             Self::Spanish => "ES",
@@ -58,7 +69,10 @@ impl Language {
     /// Lowercase code used in the TranslateGemma prompt.
     pub fn ollama_source_code(self) -> &'static str {
         match self {
-            Self::Portuguese | Self::PortuguesePortugal | Self::PortugueseBrazil => "pt",
+            Self::Portuguese
+            | Self::PortuguesePortugal
+            | Self::PortugueseBrazil
+            | Self::PortugueseAngola => "pt",
             Self::English => "en",
             Self::Spanish => "es",
         }
@@ -69,6 +83,7 @@ impl Language {
         match self {
             Self::Portuguese | Self::PortuguesePortugal => "pt-PT",
             Self::PortugueseBrazil => "pt-BR",
+            Self::PortugueseAngola => "pt-AO",
             Self::English => "en",
             Self::Spanish => "es",
         }
@@ -82,6 +97,7 @@ pub const TARGET_LANGUAGES: &[Language] = &[
     Language::English,
     Language::PortuguesePortugal,
     Language::PortugueseBrazil,
+    Language::PortugueseAngola,
     Language::Spanish,
 ];
 
@@ -100,12 +116,13 @@ impl Default for LangPair {
     }
 }
 
-/// The five pairs this build exposes. DeepL supports far more; this app
+/// The pairs this build exposes. DeepL supports far more; this app
 /// deliberately ships a curated set.
 pub const SUPPORTED_PAIRS: &[(Language, Language)] = &[
     (Language::Portuguese, Language::English),
     (Language::English, Language::PortuguesePortugal),
     (Language::English, Language::PortugueseBrazil),
+    (Language::English, Language::PortugueseAngola),
     (Language::English, Language::Spanish),
     (Language::Spanish, Language::English),
 ];
@@ -127,13 +144,49 @@ pub fn allowed_targets(source: Language) -> &'static [Language] {
             Language::Spanish,
         ],
         Language::Spanish => &[Language::English],
-        Language::PortuguesePortugal | Language::PortugueseBrazil => &[],
+        Language::PortuguesePortugal | Language::PortugueseBrazil | Language::PortugueseAngola => {
+            &[]
+        }
+    }
+}
+
+/// Targets a specific provider can produce. Angolan Portuguese is only
+/// available through Ollama, because DeepL has no such target language.
+pub fn allowed_targets_for(provider: Provider, source: Language) -> &'static [Language] {
+    match provider {
+        Provider::DeepL => allowed_targets(source),
+        Provider::Ollama => match source {
+            Language::Portuguese => &[Language::English],
+            Language::English => &[
+                Language::PortuguesePortugal,
+                Language::PortugueseBrazil,
+                Language::PortugueseAngola,
+                Language::Spanish,
+            ],
+            Language::Spanish => &[Language::English],
+            Language::PortuguesePortugal
+            | Language::PortugueseBrazil
+            | Language::PortugueseAngola => &[],
+        },
     }
 }
 
 /// Pick the target that should follow a newly chosen source language.
 pub fn target_for_source(source: Language, current_target: Language) -> Language {
     let allowed = allowed_targets(source);
+    if allowed.contains(&current_target) {
+        current_target
+    } else {
+        allowed.first().copied().unwrap_or(current_target)
+    }
+}
+
+pub fn target_for_source_with(
+    provider: Provider,
+    source: Language,
+    current_target: Language,
+) -> Language {
+    let allowed = allowed_targets_for(provider, source);
     if allowed.contains(&current_target) {
         current_target
     } else {
@@ -218,6 +271,7 @@ mod tests {
         assert_eq!(Language::Spanish.code(), "ES");
         assert_eq!(Language::PortuguesePortugal.code(), "PT-PT");
         assert_eq!(Language::PortugueseBrazil.code(), "PT-BR");
+        assert_eq!(Language::PortugueseAngola.code(), "PT-AO");
     }
 
     #[test]
@@ -238,8 +292,44 @@ mod tests {
         assert_eq!(Language::Spanish.ollama_source_code(), "es");
         assert_eq!(Language::PortuguesePortugal.ollama_target_code(), "pt-PT");
         assert_eq!(Language::PortugueseBrazil.ollama_target_code(), "pt-BR");
+        assert_eq!(Language::PortugueseAngola.ollama_target_code(), "pt-AO");
         assert_eq!(Language::English.ollama_target_code(), "en");
         assert_eq!(Language::Spanish.ollama_target_code(), "es");
+    }
+
+    #[test]
+    fn angolan_portuguese_is_ollama_only() {
+        assert!(!allowed_targets(Language::English).contains(&Language::PortugueseAngola));
+        assert!(allowed_targets_for(Provider::DeepL, Language::English)
+            .contains(&Language::PortugueseBrazil));
+        assert!(!allowed_targets_for(Provider::DeepL, Language::English)
+            .contains(&Language::PortugueseAngola));
+        assert!(allowed_targets_for(Provider::Ollama, Language::English)
+            .contains(&Language::PortugueseAngola));
+        assert!(is_supported_pair(
+            Language::English,
+            Language::PortugueseAngola
+        ));
+    }
+
+    #[test]
+    fn provider_specific_target_fallback() {
+        assert_eq!(
+            target_for_source_with(
+                Provider::Ollama,
+                Language::English,
+                Language::PortugueseAngola
+            ),
+            Language::PortugueseAngola
+        );
+        assert_eq!(
+            target_for_source_with(
+                Provider::DeepL,
+                Language::English,
+                Language::PortugueseAngola
+            ),
+            Language::PortuguesePortugal
+        );
     }
 
     #[test]

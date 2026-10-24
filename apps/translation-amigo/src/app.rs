@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use deepl_core::{
-    allowed_targets, is_supported_pair, swap_pair, target_for_source, ApiError, ErrorKind,
-    LangPair, OllamaModel, OllamaStatus, Provider, Register, SessionStatus, Translation,
-    MAX_TRANSLATION_CHARS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
+    allowed_targets_for, swap_pair, target_for_source_with, ApiError, ErrorKind, LangPair,
+    OllamaModel, OllamaStatus, Provider, Register, Sampling, SessionStatus, Translation,
+    MAX_TRANSLATION_CHARS, MAX_VARIANTS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
 };
 use deepl_engine::{Command, Engine, Event, ProviderJob};
 use eframe::egui::{
@@ -17,40 +18,192 @@ const AUTO_TRANSLATE_DELAY: f64 = 0.85;
 const MAX_CONTENT_WIDTH: f32 = 1240.0;
 const STACKED_LAYOUT_THRESHOLD: f32 = 760.0;
 const OLLAMA_MODEL_URL: &str = "https://ollama.com/library/translategemma";
+const DEFAULT_VARIANTS: usize = 5;
+const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
+const DEFAULT_MULTI_TOP_P: f32 = 0.95;
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
-struct Preferences {
-    #[serde(default, alias = "pair")]
-    deepl_pair: LangPair,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+enum TranslationMode {
+    #[default]
+    Single,
+    Multi,
+}
+
+impl TranslationMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Single => "Single translation",
+            Self::Multi => "Multi translation",
+        }
+    }
+}
+
+/// One configured translation provider in the workspace. The app can hold any
+/// number of these, including several of the same kind.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ProviderSlot {
+    id: u64,
+    kind: Provider,
     #[serde(default)]
-    ollama_pair: LangPair,
+    pair: LangPair,
+    #[serde(default)]
+    model: OllamaModel,
+    #[serde(default)]
+    mode: TranslationMode,
+    #[serde(default)]
+    register: Register,
+    /// Situational context appended to this provider's prompt.
+    #[serde(default)]
+    context: String,
+    #[serde(default = "default_variants")]
+    variants: usize,
+    #[serde(default = "default_multi_temperature")]
+    temperature: f32,
+    #[serde(default = "default_multi_top_p")]
+    top_p: f32,
+}
+
+impl Default for ProviderSlot {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            kind: Provider::Ollama,
+            pair: LangPair::default(),
+            model: OllamaModel::default(),
+            mode: TranslationMode::Single,
+            register: Register::default(),
+            context: String::new(),
+            variants: DEFAULT_VARIANTS,
+            temperature: DEFAULT_MULTI_TEMPERATURE,
+            top_p: DEFAULT_MULTI_TOP_P,
+        }
+    }
+}
+
+impl ProviderSlot {
+    fn context(&self) -> Option<&str> {
+        let context = self.context.trim();
+        (!context.is_empty()).then_some(context)
+    }
+
+    fn sampling(&self) -> Sampling {
+        match self.mode {
+            TranslationMode::Single => Sampling::default(),
+            TranslationMode::Multi => Sampling {
+                temperature: self.temperature,
+                top_p: self.top_p,
+            },
+        }
+    }
+
+    fn count(&self) -> usize {
+        match self.mode {
+            TranslationMode::Single => 1,
+            TranslationMode::Multi => self.variants.clamp(1, MAX_VARIANTS),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct Preferences {
+    #[serde(default)]
+    providers: Vec<ProviderSlot>,
+    #[serde(default)]
+    next_slot_id: u64,
     #[serde(default)]
     auto_translate: bool,
     #[serde(default)]
     verbose_logging: bool,
-    #[serde(default = "default_true")]
-    deepl_enabled: bool,
-    #[serde(default)]
-    ollama_enabled: bool,
-    #[serde(default)]
-    ollama_model: OllamaModel,
-    #[serde(default)]
-    register: Register,
+
+    // Legacy single-provider layout. Read once so existing installs migrate
+    // their DeepL/Ollama setup into the provider list.
+    #[serde(rename = "deepl_pair", default, alias = "pair")]
+    legacy_deepl_pair: LangPair,
+    #[serde(rename = "ollama_pair", default)]
+    legacy_ollama_pair: LangPair,
+    #[serde(rename = "deepl_enabled", default = "default_true")]
+    legacy_deepl_enabled: bool,
+    #[serde(rename = "ollama_enabled", default)]
+    legacy_ollama_enabled: bool,
+    #[serde(rename = "ollama_model", default)]
+    legacy_ollama_model: OllamaModel,
+    #[serde(rename = "register", default)]
+    legacy_register: Register,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            deepl_pair: LangPair::default(),
-            ollama_pair: LangPair::default(),
+            providers: vec![ProviderSlot {
+                id: 1,
+                kind: Provider::DeepL,
+                ..ProviderSlot::default()
+            }],
+            next_slot_id: 2,
             auto_translate: false,
             verbose_logging: false,
-            deepl_enabled: true,
-            ollama_enabled: false,
-            ollama_model: OllamaModel::default(),
-            register: Register::default(),
+            legacy_deepl_pair: LangPair::default(),
+            legacy_ollama_pair: LangPair::default(),
+            legacy_deepl_enabled: true,
+            legacy_ollama_enabled: false,
+            legacy_ollama_model: OllamaModel::default(),
+            legacy_register: Register::default(),
         }
     }
+}
+
+impl Preferences {
+    /// Rebuild the provider list from the pre-multi-provider layout.
+    fn migrate(&mut self) {
+        if !self.providers.is_empty() {
+            let highest = self.providers.iter().map(|slot| slot.id).max().unwrap_or(0);
+            if self.next_slot_id <= highest {
+                self.next_slot_id = highest + 1;
+            }
+            return;
+        }
+
+        let mut providers = Vec::new();
+        if self.legacy_deepl_enabled {
+            providers.push(ProviderSlot {
+                id: providers.len() as u64 + 1,
+                kind: Provider::DeepL,
+                pair: self.legacy_deepl_pair,
+                ..ProviderSlot::default()
+            });
+        }
+        if self.legacy_ollama_enabled {
+            providers.push(ProviderSlot {
+                id: providers.len() as u64 + 1,
+                kind: Provider::Ollama,
+                pair: self.legacy_ollama_pair,
+                model: self.legacy_ollama_model,
+                register: self.legacy_register,
+                ..ProviderSlot::default()
+            });
+        }
+
+        self.next_slot_id = providers.len() as u64 + 1;
+        self.providers = providers;
+    }
+
+    fn allocate_slot_id(&mut self) -> u64 {
+        let id = self.next_slot_id.max(1);
+        self.next_slot_id = id + 1;
+        id
+    }
+}
+
+fn default_variants() -> usize {
+    DEFAULT_VARIANTS
+}
+
+fn default_multi_temperature() -> f32 {
+    DEFAULT_MULTI_TEMPERATURE
+}
+
+fn default_multi_top_p() -> f32 {
+    DEFAULT_MULTI_TOP_P
 }
 
 fn default_true() -> bool {
@@ -66,14 +219,22 @@ enum RunState {
     Error,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ProviderOutcome {
     status: RunState,
-    translation: Option<Translation>,
+    translations: Vec<Translation>,
     error: Option<ApiError>,
     elapsed_ms: Option<u128>,
     source_text: String,
     copied_at: Option<f64>,
+    copied_index: Option<usize>,
+}
+
+#[derive(Clone)]
+struct ProviderDialog {
+    /// `None` while adding a new provider.
+    editing: Option<u64>,
+    draft: ProviderSlot,
 }
 
 pub struct TranslationAmigoApp {
@@ -81,9 +242,8 @@ pub struct TranslationAmigoApp {
     prefs: Preferences,
 
     source_text: String,
-    context_hint: String,
-    deepl: ProviderOutcome,
-    ollama: ProviderOutcome,
+    outcomes: HashMap<u64, ProviderOutcome>,
+    provider_dialog: Option<ProviderDialog>,
 
     session: Option<SessionStatus>,
     ollama_status: Option<OllamaStatus>,
@@ -111,10 +271,14 @@ impl TranslationAmigoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
 
-        let prefs = cc
-            .storage
-            .and_then(|storage| eframe::get_value::<Preferences>(storage, "preferences"))
-            .unwrap_or_default();
+        let prefs = {
+            let mut prefs = cc
+                .storage
+                .and_then(|storage| eframe::get_value::<Preferences>(storage, "preferences"))
+                .unwrap_or_default();
+            prefs.migrate();
+            prefs
+        };
 
         let ctx = cc.egui_ctx.clone();
         let engine = Engine::spawn(Arc::new(move || ctx.request_repaint()));
@@ -127,9 +291,8 @@ impl TranslationAmigoApp {
             engine,
             prefs,
             source_text: String::new(),
-            context_hint: String::new(),
-            deepl: ProviderOutcome::default(),
-            ollama: ProviderOutcome::default(),
+            outcomes: HashMap::new(),
+            provider_dialog: None,
             session: None,
             ollama_status: None,
             ollama_checking: true,
@@ -156,57 +319,42 @@ impl TranslationAmigoApp {
         self.session.map(|status| status.signed_in).unwrap_or(false)
     }
 
-    fn provider_enabled(&self, provider: Provider) -> bool {
-        match provider {
-            Provider::DeepL => self.prefs.deepl_enabled,
-            Provider::Ollama => self.prefs.ollama_enabled,
-        }
-    }
-
-    fn provider_configured(&self, provider: Provider) -> bool {
-        match provider {
+    fn slot_configured(&self, slot: &ProviderSlot) -> bool {
+        match slot.kind {
             Provider::DeepL => self.signed_in(),
             Provider::Ollama => self
                 .ollama_status
                 .as_ref()
-                .map(|status| status.running && status.has_model(self.prefs.ollama_model.id()))
+                .map(|status| status.can_use(slot.model))
                 .unwrap_or(false),
         }
     }
 
-    fn provider_pair(&self, provider: Provider) -> LangPair {
-        match provider {
-            Provider::DeepL => self.prefs.deepl_pair,
-            Provider::Ollama => self.prefs.ollama_pair,
-        }
+    fn outcome(&self, slot_id: u64) -> Option<&ProviderOutcome> {
+        self.outcomes.get(&slot_id)
     }
 
-    fn provider_outcome(&self, provider: Provider) -> &ProviderOutcome {
-        match provider {
-            Provider::DeepL => &self.deepl,
-            Provider::Ollama => &self.ollama,
-        }
+    fn outcome_mut(&mut self, slot_id: u64) -> &mut ProviderOutcome {
+        self.outcomes.entry(slot_id).or_default()
     }
 
-    fn provider_outcome_mut(&mut self, provider: Provider) -> &mut ProviderOutcome {
-        match provider {
-            Provider::DeepL => &mut self.deepl,
-            Provider::Ollama => &mut self.ollama,
-        }
+    fn invalidate(&mut self, slot_id: u64) {
+        self.outcomes.insert(slot_id, ProviderOutcome::default());
     }
 
-    fn enabled_providers(&self) -> Vec<Provider> {
-        Provider::ALL
-            .iter()
-            .copied()
-            .filter(|provider| self.provider_enabled(*provider))
-            .collect()
+    fn invalidate_all(&mut self) {
+        let ids: Vec<u64> = self.prefs.providers.iter().map(|slot| slot.id).collect();
+        for id in ids {
+            self.invalidate(id);
+        }
     }
 
     fn any_translating(&self) -> bool {
-        self.enabled_providers()
-            .iter()
-            .any(|provider| self.provider_outcome(*provider).status == RunState::Translating)
+        self.prefs.providers.iter().any(|slot| {
+            self.outcome(slot.id)
+                .map(|outcome| outcome.status == RunState::Translating)
+                .unwrap_or(false)
+        })
     }
 
     fn has_text(&self) -> bool {
@@ -221,19 +369,17 @@ impl TranslationAmigoApp {
         self.character_count() > MAX_TRANSLATION_CHARS
     }
 
-    fn all_enabled_configured(&self) -> bool {
-        let providers = self.enabled_providers();
-        !providers.is_empty()
-            && providers
+    fn all_configured(&self) -> bool {
+        !self.prefs.providers.is_empty()
+            && self
+                .prefs
+                .providers
                 .iter()
-                .all(|provider| self.provider_configured(*provider))
+                .all(|slot| self.slot_configured(slot))
     }
 
     fn can_translate(&self) -> bool {
-        self.all_enabled_configured()
-            && self.has_text()
-            && !self.over_limit()
-            && !self.any_translating()
+        self.all_configured() && self.has_text() && !self.over_limit() && !self.any_translating()
     }
 
     fn cancel_batch(&mut self) {
@@ -242,49 +388,69 @@ impl TranslationAmigoApp {
         self.received_responses = 0;
     }
 
-    fn invalidate_outcome(&mut self, provider: Provider) {
-        *self.provider_outcome_mut(provider) = ProviderOutcome::default();
-    }
+    fn save_slot(&mut self, draft: ProviderSlot) {
+        let mut saved_id = draft.id;
 
-    fn set_provider_enabled(&mut self, provider: Provider, enabled: bool) {
-        match provider {
-            Provider::DeepL => self.prefs.deepl_enabled = enabled,
-            Provider::Ollama => self.prefs.ollama_enabled = enabled,
-        }
-
-        if !enabled {
-            self.invalidate_outcome(provider);
-            if self.enabled_providers().is_empty() {
-                self.cancel_batch();
-            }
-        } else if self.prefs.auto_translate && self.has_text() && self.provider_configured(provider)
+        match self
+            .prefs
+            .providers
+            .iter_mut()
+            .find(|slot| slot.id == draft.id)
         {
-            self.dirty_since = Some(self.now);
-        }
-    }
-
-    fn set_provider_pair(&mut self, provider: Provider, pair: LangPair) {
-        match provider {
-            Provider::DeepL => self.prefs.deepl_pair = pair,
-            Provider::Ollama => self.prefs.ollama_pair = pair,
+            Some(existing) => *existing = draft,
+            None => {
+                let mut slot = draft;
+                slot.id = self.prefs.allocate_slot_id();
+                saved_id = slot.id;
+                self.prefs.providers.push(slot);
+            }
         }
 
         self.cancel_batch();
-        self.invalidate_outcome(provider);
+        self.invalidate(saved_id);
 
-        if self.prefs.auto_translate && self.has_text() {
+        if self.prefs.auto_translate && self.has_text() && self.all_configured() {
             self.dirty_since = Some(self.now);
         }
+    }
+
+    fn remove_slot(&mut self, slot_id: u64) {
+        self.prefs.providers.retain(|slot| slot.id != slot_id);
+        self.outcomes.remove(&slot_id);
+        self.cancel_batch();
+
+        if self.prefs.providers.is_empty() {
+            self.dirty_since = None;
+        } else if self.prefs.auto_translate && self.has_text() && self.all_configured() {
+            self.dirty_since = Some(self.now);
+        }
+    }
+
+    fn open_provider_dialog(&mut self, editing: Option<u64>) {
+        let draft = editing
+            .and_then(|id| {
+                self.prefs
+                    .providers
+                    .iter()
+                    .find(|slot| slot.id == id)
+                    .cloned()
+            })
+            .unwrap_or_else(|| ProviderSlot {
+                kind: Provider::DeepL,
+                ..ProviderSlot::default()
+            });
+
+        self.provider_dialog = Some(ProviderDialog { editing, draft });
     }
 
     // ---------------------------------------------------------------- lifecycle
 
     fn start_translation(&mut self) {
-        let providers = self.enabled_providers();
+        let slots = self.prefs.providers.clone();
 
-        if providers.is_empty() {
+        if slots.is_empty() {
             self.global_error = Some(ApiError::input(
-                "Select at least one provider before translating.",
+                "Add a translation provider before translating.",
             ));
             return;
         }
@@ -293,10 +459,7 @@ impl TranslationAmigoApp {
             return;
         }
 
-        if providers
-            .iter()
-            .any(|provider| !self.provider_configured(*provider))
-        {
+        if slots.iter().any(|slot| !self.slot_configured(slot)) {
             self.open_settings();
             return;
         }
@@ -308,39 +471,39 @@ impl TranslationAmigoApp {
             return;
         }
 
-        let mut jobs = Vec::with_capacity(providers.len());
+        let mut jobs = Vec::with_capacity(slots.len());
 
-        for provider in &providers {
-            let pair = self.provider_pair(*provider);
-
-            if !is_supported_pair(pair.source, pair.target) {
+        for slot in &slots {
+            if !allowed_targets_for(slot.kind, slot.pair.source).contains(&slot.pair.target) {
                 self.global_error = Some(ApiError::input(
                     "That language pair is not supported by this version of the app.",
                 ));
                 return;
             }
 
-            let outcome = self.provider_outcome_mut(*provider);
+            let outcome = self.outcome_mut(slot.id);
             outcome.status = RunState::Translating;
-            outcome.translation = None;
+            outcome.translations.clear();
             outcome.error = None;
             outcome.elapsed_ms = None;
             outcome.copied_at = None;
+            outcome.copied_index = None;
 
-            jobs.push(match provider {
+            jobs.push(match slot.kind {
                 Provider::DeepL => ProviderJob::DeepL {
-                    source: pair.source,
-                    target: pair.target,
+                    slot_id: slot.id,
+                    source: slot.pair.source,
+                    target: slot.pair.target,
                 },
                 Provider::Ollama => ProviderJob::Ollama {
-                    source: pair.source,
-                    target: pair.target,
-                    model: self.prefs.ollama_model.id().to_string(),
-                    register: self.prefs.register,
-                    context: {
-                        let context = self.context_hint.trim();
-                        (!context.is_empty()).then(|| context.to_string())
-                    },
+                    slot_id: slot.id,
+                    source: slot.pair.source,
+                    target: slot.pair.target,
+                    model: slot.model.id().to_string(),
+                    register: slot.register,
+                    context: slot.context().map(str::to_string),
+                    sampling: slot.sampling(),
+                    count: slot.count(),
                 },
             });
         }
@@ -364,8 +527,7 @@ impl TranslationAmigoApp {
     fn clear_all(&mut self) {
         self.cancel_batch();
         self.source_text.clear();
-        self.invalidate_outcome(Provider::DeepL);
-        self.invalidate_outcome(Provider::Ollama);
+        self.invalidate_all();
         self.dirty_since = None;
         self.global_error = None;
         self.focus_source = true;
@@ -375,13 +537,41 @@ impl TranslationAmigoApp {
         self.dirty_since = Some(self.now);
     }
 
-    fn copy_outcome(&mut self, ctx: &egui::Context, provider: Provider) {
+    fn copy_outcome(&mut self, ctx: &egui::Context, slot_id: u64, index: Option<usize>) {
         let now = self.now;
-        let outcome = self.provider_outcome_mut(provider);
-        if let Some(translation) = &outcome.translation {
-            ctx.copy_text(translation.text.clone());
-            outcome.copied_at = Some(now);
-        }
+        let Some(outcome) = self.outcomes.get(&slot_id) else {
+            return;
+        };
+
+        let text = match index {
+            Some(index) => outcome
+                .translations
+                .get(index)
+                .map(|translation| translation.text.clone()),
+            None => {
+                if outcome.translations.is_empty() {
+                    None
+                } else {
+                    Some(
+                        outcome
+                            .translations
+                            .iter()
+                            .map(|translation| translation.text.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                }
+            }
+        };
+
+        let Some(text) = text else {
+            return;
+        };
+
+        ctx.copy_text(text);
+        let outcome = self.outcome_mut(slot_id);
+        outcome.copied_at = Some(now);
+        outcome.copied_index = index;
     }
 
     fn open_settings(&mut self) {
@@ -404,18 +594,36 @@ impl TranslationAmigoApp {
             std::env::consts::ARCH
         ));
         text.push_str(&format!(
-            "Providers: DeepL enabled={} signed_in={}; Ollama enabled={} running={:?} model={} installed={} register={:?}\n",
-            self.prefs.deepl_enabled,
+            "Providers: {} configured; DeepL signed_in={}; Ollama running={:?}\n",
+            self.prefs.providers.len(),
             self.signed_in(),
-            self.prefs.ollama_enabled,
-            self.ollama_status.as_ref().map(|status| status.running),
-            self.prefs.ollama_model.id(),
-            self.ollama_status
-                .as_ref()
-                .map(|status| status.has_model(self.prefs.ollama_model.id()))
-                .unwrap_or(false),
-            self.prefs.register
+            self.ollama_status.as_ref().map(|status| status.running)
         ));
+        for slot in &self.prefs.providers {
+            let available = self.slot_configured(slot);
+            match slot.kind {
+                Provider::DeepL => text.push_str(&format!(
+                    "  - #{} DeepL {} -> {} available={}\n",
+                    slot.id,
+                    slot.pair.source.code(),
+                    slot.pair.target.code(),
+                    available
+                )),
+                Provider::Ollama => text.push_str(&format!(
+                    "  - #{} Ollama {} -> {} model={} mode={:?} variants={} temperature={} top_p={} register={:?} available={}\n",
+                    slot.id,
+                    slot.pair.source.code(),
+                    slot.pair.target.code(),
+                    slot.model.id(),
+                    slot.mode,
+                    slot.variants,
+                    slot.temperature,
+                    slot.top_p,
+                    slot.register,
+                    available
+                )),
+            }
+        }
         text.push_str(&format!(
             "Log file: {}\n",
             crate::logging::log_path().display()
@@ -453,9 +661,9 @@ impl TranslationAmigoApp {
                             self.open_settings();
                         }
                         if signed_in
-                            && self.prefs.deepl_enabled
                             && self.prefs.auto_translate
                             && self.has_text()
+                            && self.all_configured()
                         {
                             self.dirty_since = Some(self.now);
                         }
@@ -485,9 +693,7 @@ impl TranslationAmigoApp {
                             self.global_error = None;
                             self.focus_source = true;
 
-                            if self.prefs.deepl_enabled
-                                && self.prefs.auto_translate
-                                && self.has_text()
+                            if self.prefs.auto_translate && self.has_text() && self.all_configured()
                             {
                                 self.dirty_since = Some(self.now);
                             }
@@ -508,7 +714,7 @@ impl TranslationAmigoApp {
                             self.session = Some(status);
                             self.settings_error = None;
                             self.cancel_batch();
-                            self.invalidate_outcome(Provider::DeepL);
+                            self.invalidate_all();
                         }
                         Err(error) => {
                             self.session = Some(SessionStatus::signed_out());
@@ -520,15 +726,10 @@ impl TranslationAmigoApp {
                     self.ollama_checking = false;
                     match result {
                         Ok(status) => {
-                            let configured =
-                                status.running && status.has_model(self.prefs.ollama_model.id());
                             self.ollama_status = Some(status);
                             self.ollama_status_error = None;
 
-                            if configured
-                                && self.prefs.ollama_enabled
-                                && self.prefs.auto_translate
-                                && self.has_text()
+                            if self.prefs.auto_translate && self.has_text() && self.all_configured()
                             {
                                 self.dirty_since = Some(self.now);
                             }
@@ -541,6 +742,7 @@ impl TranslationAmigoApp {
                 }
                 Event::ProviderTranslation {
                     request_id,
+                    slot_id,
                     provider,
                     result,
                     elapsed_ms,
@@ -551,23 +753,26 @@ impl TranslationAmigoApp {
 
                     self.received_responses += 1;
 
-                    let outcome_error = if self.provider_enabled(provider) {
+                    let slot_exists = self.prefs.providers.iter().any(|slot| slot.id == slot_id);
+
+                    let outcome_error = if slot_exists {
                         let source_text = self.source_text.clone();
-                        let outcome = self.provider_outcome_mut(provider);
+                        let outcome = self.outcome_mut(slot_id);
                         outcome.elapsed_ms = Some(elapsed_ms);
                         outcome.source_text = source_text;
                         outcome.copied_at = None;
+                        outcome.copied_index = None;
 
                         match result {
-                            Ok(translation) => {
-                                outcome.translation = Some(translation);
+                            Ok(translations) => {
+                                outcome.translations = translations;
                                 outcome.error = None;
                                 outcome.status = RunState::Done;
                                 None
                             }
                             Err(error) => {
                                 let kind = error.kind;
-                                outcome.translation = None;
+                                outcome.translations.clear();
                                 outcome.error = Some(error.clone());
                                 outcome.status = RunState::Error;
                                 Some((kind, error))
@@ -603,12 +808,12 @@ impl TranslationAmigoApp {
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
         let command_comma =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma));
-        let escape = self.settings_open
-            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let escape = ctx
+            .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            && (self.settings_open || self.provider_dialog.is_some());
 
         if escape {
-            self.settings_open = false;
-            self.focus_source = true;
+            self.close_overlays();
             return;
         }
 
@@ -617,38 +822,39 @@ impl TranslationAmigoApp {
             return;
         }
 
-        if command_enter && !self.settings_open {
+        if command_enter && !self.settings_open && self.provider_dialog.is_none() {
             if self.can_translate() {
                 self.start_translation();
-            } else if self.enabled_providers().is_empty() || !self.all_enabled_configured() {
+            } else if self.prefs.providers.is_empty() {
+                self.open_provider_dialog(None);
+            } else if !self.all_configured() {
                 self.open_settings();
             }
         }
     }
 
     fn maybe_auto_translate(&mut self, ctx: &egui::Context) {
-        if !self.prefs.auto_translate || self.settings_open {
+        if !self.prefs.auto_translate || self.settings_open || self.provider_dialog.is_some() {
             return;
         }
 
-        let providers = self.enabled_providers();
-        if providers.is_empty() {
+        if self.prefs.providers.is_empty() {
             return;
         }
 
         if !self.has_text() {
             if !self.any_translating() {
-                for provider in providers {
-                    self.invalidate_outcome(provider);
-                }
+                self.invalidate_all();
             }
             return;
         }
 
         if self.current_request.is_some()
-            || providers
+            || self
+                .prefs
+                .providers
                 .iter()
-                .any(|provider| !self.provider_configured(*provider))
+                .any(|slot| !self.slot_configured(slot))
         {
             return;
         }
@@ -688,8 +894,6 @@ impl TranslationAmigoApp {
     fn ui_content(&mut self, ui: &mut Ui, ctx: &egui::Context, palette: &Palette) {
         self.ui_header(ui, palette);
         ui.add_space(6.0);
-        self.ui_provider_rows(ui, palette);
-        ui.add_space(10.0);
 
         let error_height = if self.global_error.is_some() {
             76.0
@@ -711,13 +915,13 @@ impl TranslationAmigoApp {
             ui.spacing_mut().item_spacing.x = gap;
             ui.columns(2, |columns| {
                 self.ui_source_pane(&mut columns[0], palette, panes_height);
-                self.ui_target_pane(&mut columns[1], ctx, palette, panes_height);
+                self.ui_target_pane(&mut columns[1], ctx, palette);
             });
         } else {
             let pane_height = ((panes_height - gap) / 2.0).max(140.0);
             self.ui_source_pane(ui, palette, pane_height);
             ui.add_space(gap);
-            self.ui_target_pane(ui, ctx, palette, pane_height);
+            self.ui_target_pane(ui, ctx, palette);
         }
 
         if self.global_error.is_some() {
@@ -740,7 +944,7 @@ impl TranslationAmigoApp {
                     .color(palette.text_secondary),
             );
 
-            let enabled = self.enabled_providers().len();
+            let enabled = self.prefs.providers.len();
             if enabled > 0 {
                 badge(
                     ui,
@@ -759,152 +963,6 @@ impl TranslationAmigoApp {
         });
 
         if open_settings {
-            self.open_settings();
-        }
-    }
-
-    fn ui_provider_rows(&mut self, ui: &mut Ui, palette: &Palette) {
-        let deepl_enabled = self.prefs.deepl_enabled;
-        let ollama_enabled = self.prefs.ollama_enabled;
-        let deepl_pair = self.prefs.deepl_pair;
-        let ollama_pair = self.prefs.ollama_pair;
-        let deepl_configured = self.signed_in();
-        let ollama_configured = self.provider_configured(Provider::Ollama);
-        let model_is_cloud = self.prefs.ollama_model.is_cloud();
-
-        let mut new_deepl_enabled = deepl_enabled;
-        let mut new_ollama_enabled = ollama_enabled;
-        let mut new_deepl_pair = deepl_pair;
-        let mut new_ollama_pair = ollama_pair;
-        let mut register = self.prefs.register;
-        let original_context = std::mem::take(&mut self.context_hint);
-        let mut context_hint = original_context.clone();
-        let mut setup_requested = false;
-
-        Frame::new()
-            .fill(palette.surface)
-            .stroke(Stroke::new(1.0_f32, palette.border))
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::symmetric(12, 8))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-
-                provider_row(
-                    ui,
-                    Provider::DeepL,
-                    &mut new_deepl_enabled,
-                    &mut new_deepl_pair,
-                    deepl_configured,
-                    palette,
-                    &mut setup_requested,
-                );
-
-                hairline(ui, palette);
-
-                provider_row(
-                    ui,
-                    Provider::Ollama,
-                    &mut new_ollama_enabled,
-                    &mut new_ollama_pair,
-                    ollama_configured,
-                    palette,
-                    &mut setup_requested,
-                );
-
-                if new_ollama_enabled {
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("REGISTER")
-                                .size(9.5)
-                                .strong()
-                                .color(palette.text_faint),
-                        );
-                        egui::ComboBox::from_id_salt("ollama_register")
-                            .selected_text(
-                                RichText::new(register.label())
-                                    .size(12.0)
-                                    .color(palette.text),
-                            )
-                            .width(122.0)
-                            .show_ui(ui, |ui| {
-                                for option in Register::ALL {
-                                    ui.selectable_value(&mut register, option, option.label());
-                                }
-                            });
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("CONTEXT HINT")
-                                .size(9.5)
-                                .strong()
-                                .color(palette.text_faint),
-                        );
-
-                        let input_width = (ui.available_width() - 16.0).max(120.0);
-                        Frame::new()
-                            .fill(palette.surface_muted)
-                            .stroke(Stroke::new(1.0_f32, palette.border))
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(Margin::symmetric(8, 4))
-                            .show(ui, |ui| {
-                                ui.add(
-                                    TextEdit::singleline(&mut context_hint)
-                                        .char_limit(300)
-                                        .desired_width(input_width)
-                                        .hint_text("e.g. flirty conversation between friends")
-                                        .font(FontId::proportional(12.0))
-                                        .frame(false)
-                                        .margin(Margin::same(0)),
-                                );
-                            });
-                    });
-
-                    if model_is_cloud {
-                        ui.label(
-                            RichText::new("Cloud model: translated text is sent to Ollama Cloud.")
-                                .size(10.5)
-                                .color(palette.text_faint),
-                        );
-                    }
-                }
-            });
-
-        if new_deepl_enabled != deepl_enabled {
-            self.set_provider_enabled(Provider::DeepL, new_deepl_enabled);
-        }
-        if new_ollama_enabled != ollama_enabled {
-            self.set_provider_enabled(Provider::Ollama, new_ollama_enabled);
-        }
-        if new_deepl_pair != deepl_pair {
-            self.set_provider_pair(Provider::DeepL, new_deepl_pair);
-        }
-        if new_ollama_pair != ollama_pair {
-            self.set_provider_pair(Provider::Ollama, new_ollama_pair);
-        }
-
-        let context_changed = context_hint != original_context;
-        self.context_hint = context_hint;
-
-        if register != self.prefs.register {
-            self.prefs.register = register;
-            self.cancel_batch();
-            self.invalidate_outcome(Provider::Ollama);
-            if self.prefs.auto_translate && self.has_text() {
-                self.dirty_since = Some(self.now);
-            }
-        }
-
-        if context_changed {
-            self.cancel_batch();
-            self.invalidate_outcome(Provider::Ollama);
-            if self.prefs.auto_translate && self.has_text() {
-                self.dirty_since = Some(self.now);
-            }
-        }
-
-        if setup_requested {
             self.open_settings();
         }
     }
@@ -1015,119 +1073,99 @@ impl TranslationAmigoApp {
         }
     }
 
-    fn ui_target_pane(&mut self, ui: &mut Ui, ctx: &egui::Context, palette: &Palette, height: f32) {
+    fn ui_target_pane(&mut self, ui: &mut Ui, ctx: &egui::Context, palette: &Palette) {
         let width = ui.available_width();
-        let body_height = (height - 90.0).max(80.0);
-        let providers = self.enabled_providers();
         let source_text = self.source_text.clone();
         let now = self.now;
-        let deepl_configured = self.signed_in();
-        let ollama_configured = self.provider_configured(Provider::Ollama);
-        let deepl_outcome = &self.deepl;
-        let ollama_outcome = &self.ollama;
-        let mut copy_requested = None;
+
+        let cards: Vec<(ProviderSlot, ProviderOutcome, bool)> = self
+            .prefs
+            .providers
+            .iter()
+            .map(|slot| {
+                (
+                    slot.clone(),
+                    self.outcome(slot.id).cloned().unwrap_or_default(),
+                    self.slot_configured(slot),
+                )
+            })
+            .collect();
+
+        let mut copy_requested: Option<(u64, Option<usize>)> = None;
+        let mut edit_requested = None;
+        let mut delete_requested = None;
         let mut settings_requested = false;
+        let mut add_requested = false;
 
-        Frame::new()
-            .fill(palette.surface)
-            .stroke(Stroke::new(1.0_f32, palette.border))
-            .corner_radius(CornerRadius::same(16))
-            .show(ui, |ui| {
-                ui.set_width(width);
-                ui.set_max_width(width);
-                ui.set_height(height);
-                ui.set_max_height(height);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::ZERO;
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, 8.0);
 
-                    pane_header(ui, width, "Translations", 0, false, palette);
-                    hairline(ui, palette);
-
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(width, body_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            if providers.is_empty() {
-                                ui.allocate_ui_with_layout(
-                                    Vec2::new(width, body_height),
-                                    Layout::top_down(Align::Center),
-                                    |ui| {
-                                        ui.add_space((body_height * 0.3).max(16.0));
-                                        ui.label(
-                                            RichText::new("Select a provider")
-                                                .size(14.0)
-                                                .strong()
-                                                .color(palette.text),
-                                        );
-                                        ui.add_space(2.0);
-                                        ui.label(
-                                            RichText::new("Enable DeepL, Ollama, or both above.")
-                                                .size(12.0)
-                                                .color(palette.text_muted),
-                                        );
-                                    },
-                                );
-                            } else {
-                                ScrollArea::vertical()
-                                    .id_salt("target_scroll")
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        ui.set_max_width(width);
-                                        for (index, provider) in providers.iter().enumerate() {
-                                            let outcome = match provider {
-                                                Provider::DeepL => deepl_outcome,
-                                                Provider::Ollama => ollama_outcome,
-                                            };
-                                            let configured = match provider {
-                                                Provider::DeepL => deepl_configured,
-                                                Provider::Ollama => ollama_configured,
-                                            };
-
-                                            result_section(
-                                                ui,
-                                                *provider,
-                                                outcome,
-                                                configured,
-                                                &source_text,
-                                                now,
-                                                palette,
-                                                &mut copy_requested,
-                                                &mut settings_requested,
-                                            );
-
-                                            if index + 1 < providers.len() {
-                                                ui.add_space(10.0);
-                                                hairline(ui, palette);
-                                                ui.add_space(10.0);
-                                            }
-                                        }
-                                    });
-                            }
-                        },
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, 22.0),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.label(
+                        RichText::new("Translations")
+                            .size(13.0)
+                            .strong()
+                            .color(palette.text),
                     );
+                },
+            );
 
-                    hairline(ui, palette);
+            if add_provider_button(ui, palette) {
+                add_requested = true;
+            }
 
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(width, 44.0),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            ui.add_space(12.0);
-                            if width >= 240.0 {
-                                let hint = if cfg!(target_os = "macos") {
-                                    "Cmd+Enter to translate"
-                                } else {
-                                    "Ctrl+Enter to translate"
-                                };
-                                ui.label(RichText::new(hint).size(11.0).color(palette.text_faint));
-                            }
-                        },
+            if cards.is_empty() {
+                result_card(ui, palette, |ui| {
+                    ui.label(
+                        RichText::new("No translation providers")
+                            .size(13.5)
+                            .strong()
+                            .color(palette.text),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Add DeepL or Ollama above to start translating.")
+                            .size(12.0)
+                            .color(palette.text_muted),
                     );
                 });
-            });
+            } else {
+                for (slot, outcome, configured) in &cards {
+                    result_card(ui, palette, |ui| {
+                        result_section(
+                            ui,
+                            slot,
+                            outcome,
+                            *configured,
+                            &source_text,
+                            now,
+                            palette,
+                            &mut copy_requested,
+                            &mut edit_requested,
+                            &mut delete_requested,
+                            &mut settings_requested,
+                        );
+                    });
+                }
+            }
+        });
 
-        if let Some(provider) = copy_requested {
-            self.copy_outcome(ctx, provider);
+        if add_requested {
+            self.open_provider_dialog(None);
+        }
+        if let Some(slot_id) = edit_requested {
+            self.open_provider_dialog(Some(slot_id));
+        }
+        if let Some(slot_id) = delete_requested {
+            self.remove_slot(slot_id);
+        }
+        if let Some((slot_id, index)) = copy_requested {
+            self.copy_outcome(ctx, slot_id, index);
         }
         if settings_requested {
             self.open_settings();
@@ -1179,9 +1217,8 @@ impl TranslationAmigoApp {
         let mut auto_changed = false;
         let mut translate_requested = false;
         let mut setup_requested = false;
-        let providers = self.enabled_providers();
-        let has_provider = !providers.is_empty();
-        let all_configured = self.all_enabled_configured();
+        let has_provider = !self.prefs.providers.is_empty();
+        let all_configured = self.all_configured();
         let can_translate = self.can_translate();
         let translating = self.any_translating();
 
@@ -1200,7 +1237,9 @@ impl TranslationAmigoApp {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if !has_provider {
-                    primary_button(ui, "Select a provider", false, palette);
+                    if primary_button(ui, "Add a provider", true, palette).clicked() {
+                        setup_requested = true;
+                    }
                 } else if !all_configured {
                     if primary_button(ui, "Set up providers", true, palette).clicked() {
                         setup_requested = true;
@@ -1220,12 +1259,12 @@ impl TranslationAmigoApp {
 
         if auto_changed {
             self.prefs.auto_translate = auto;
-            if auto && self.has_text() && self.all_enabled_configured() {
+            if auto && self.has_text() && self.all_configured() {
                 self.dirty_since = Some(self.now);
             }
         }
         if setup_requested {
-            self.open_settings();
+            self.open_provider_dialog(None);
         }
         if translate_requested {
             self.start_translation();
@@ -1264,17 +1303,12 @@ impl TranslationAmigoApp {
         let ollama_status = self.ollama_status.clone();
         let ollama_checking = self.ollama_checking;
         let ollama_status_error = self.ollama_status_error.clone();
-        let ollama_configured = ollama_status
-            .as_ref()
-            .map(|status| status.running && status.has_model(self.prefs.ollama_model.id()))
-            .unwrap_or(false);
         let diagnostics_copied = self
             .diagnostics_copied_at
             .map(|copied_at| self.now - copied_at < 2.0)
             .unwrap_or(false);
         let log_path = crate::logging::log_path();
 
-        let mut model = self.prefs.ollama_model;
         let mut verbose_logging = self.prefs.verbose_logging;
         let mut sign_in = false;
         let mut sign_out = false;
@@ -1283,7 +1317,6 @@ impl TranslationAmigoApp {
         let mut open_ollama_models = false;
         let mut diagnostics_requested = false;
         let mut verbose_changed = false;
-        let mut model_changed = false;
 
         egui::Window::new("settings")
             .id(Id::new("settings_window"))
@@ -1453,7 +1486,7 @@ impl TranslationAmigoApp {
                                 OllamaModel::ALL
                                     .iter()
                                     .copied()
-                                    .filter(|option| status.has_model(option.id()))
+                                    .filter(|option| status.can_use(*option))
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -1498,10 +1531,10 @@ impl TranslationAmigoApp {
                                             );
                                             let detail = if ollama_running {
                                                 if installed_models.is_empty() {
-                                                    "No supported models installed".to_string()
+                                                    "No supported models available".to_string()
                                                 } else {
                                                     format!(
-                                                        "{} supported model(s) installed",
+                                                        "{} supported model(s) available",
                                                         installed_models.len()
                                                     )
                                                 }
@@ -1518,21 +1551,6 @@ impl TranslationAmigoApp {
                                     });
                                 });
 
-                            if ollama_running && !ollama_configured {
-                                ui.add_space(4.0);
-                                ui.add(
-                                    Label::new(
-                                        RichText::new(format!(
-                                            "{} isn't installed. Run `ollama pull {}`.",
-                                            model.label(),
-                                            model.id()
-                                        ))
-                                        .size(11.0)
-                                        .color(palette.warning),
-                                    )
-                                    .wrap(),
-                                );
-                            }
                         }
 
                         if let Some(error) = &ollama_status_error {
@@ -1542,51 +1560,13 @@ impl TranslationAmigoApp {
 
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("MODEL")
-                                    .size(9.5)
-                                    .strong()
-                                    .color(palette.text_faint),
-                            );
-
-                            egui::ComboBox::from_id_salt("ollama_model")
-                                .selected_text(
-                                    RichText::new(model.label())
-                                        .size(12.0)
-                                        .color(palette.text),
-                                )
-                                .width(170.0)
-                                .show_ui(ui, |ui| {
-                                    for option in OllamaModel::ALL {
-                                        let installed = ollama_status
-                                            .as_ref()
-                                            .map(|status| status.has_model(option.id()))
-                                            .unwrap_or(false);
-                                        ui.add_enabled_ui(installed, |ui| {
-                                            if ui
-                                                .selectable_value(
-                                                    &mut model,
-                                                    option,
-                                                    option.label(),
-                                                )
-                                                .changed()
-                                            {
-                                                model_changed = true;
-                                            }
-                                        });
-                                    }
-                                });
-
                             if text_button(ui, "Refresh", palette).clicked() {
                                 refresh_ollama = true;
                             }
-                        });
-
-                        ui.horizontal(|ui| {
                             if ui
                                 .add(
                                     Button::new(
-                                        RichText::new("Ollama model library")
+                                        RichText::new("Model library")
                                             .size(11.5)
                                             .color(palette.accent),
                                     )
@@ -1598,18 +1578,13 @@ impl TranslationAmigoApp {
                             }
                         });
 
-                        if model.is_cloud() {
-                            ui.add(
-                                Label::new(
-                                    RichText::new(
-                                        "Cloud model: requests are routed through Ollama Cloud.",
-                                    )
-                                    .size(10.5)
-                                    .color(palette.text_faint),
-                                )
-                                .wrap(),
-                            );
-                        }
+                        ui.label(
+                            RichText::new(
+                                "Models are chosen per translation provider, not here.",
+                            )
+                            .size(10.5)
+                            .color(palette.text_faint),
+                        );
 
                         ui.add_space(6.0);
                         hairline(ui, palette);
@@ -1670,18 +1645,6 @@ impl TranslationAmigoApp {
                     });
             });
 
-        if model_changed {
-            self.prefs.ollama_model = model;
-            self.cancel_batch();
-            self.invalidate_outcome(Provider::Ollama);
-            if self.prefs.auto_translate
-                && self.has_text()
-                && self.provider_configured(Provider::Ollama)
-            {
-                self.dirty_since = Some(self.now);
-            }
-        }
-
         if sign_in {
             self.settings_error = None;
             self.signing_in = true;
@@ -1723,6 +1686,298 @@ impl TranslationAmigoApp {
             self.focus_source = true;
         }
     }
+    fn ui_provider_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let Some(mut dialog) = self.provider_dialog.clone() else {
+            return;
+        };
+
+        let screen = ctx.screen_rect();
+        let dialog_width = (screen.width() - 48.0).clamp(360.0, 520.0);
+        let adding = dialog.editing.is_none();
+        let ollama_status = self.ollama_status.clone();
+        let signed_in = self.signed_in();
+        let mut close = false;
+        let mut save = false;
+
+        egui::Area::new(Id::new("provider_dialog_backdrop"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(0),
+                    Color32::from_black_alpha(150),
+                );
+                if response.clicked() {
+                    close = true;
+                }
+            });
+
+        egui::Window::new("provider_dialog")
+            .id(Id::new("provider_dialog_window"))
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .order(egui::Order::Foreground)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(dialog_width)
+            .frame(
+                Frame::new()
+                    .fill(palette.surface)
+                    .stroke(Stroke::new(1.0_f32, palette.border_strong))
+                    .corner_radius(CornerRadius::same(18))
+                    .inner_margin(Margin::same(20)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(dialog_width - 40.0);
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(if adding {
+                            "Add translation provider"
+                        } else {
+                            "Provider settings"
+                        })
+                        .size(15.0)
+                        .strong()
+                        .color(palette.text),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if text_button(ui, "×", palette).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+
+                if adding {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        for kind in Provider::ALL {
+                            let selected = dialog.draft.kind == kind;
+                            if ui
+                                .selectable_label(
+                                    selected,
+                                    RichText::new(kind.label())
+                                        .size(12.5)
+                                        .color(if selected {
+                                            palette.text
+                                        } else {
+                                            palette.text_muted
+                                        }),
+                                )
+                                .clicked()
+                            {
+                                dialog.draft.kind = kind;
+                            }
+                        }
+                    });
+                    hairline(ui, palette);
+                }
+
+                pair_controls(ui, &mut dialog.draft.pair, dialog.draft.kind, palette);
+
+                if dialog.draft.kind == Provider::Ollama {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("MODEL")
+                            .size(9.5)
+                            .strong()
+                            .color(palette.text_faint),
+                    );
+                    model_combo(ui, &mut dialog.draft, palette, ollama_status.as_ref());
+
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("TRANSLATION MODE")
+                            .size(9.5)
+                            .strong()
+                            .color(palette.text_faint),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        for mode in [TranslationMode::Single, TranslationMode::Multi] {
+                            let selected = dialog.draft.mode == mode;
+                            if ui
+                                .selectable_label(
+                                    selected,
+                                    RichText::new(mode.label())
+                                        .size(12.0)
+                                        .color(if selected {
+                                            palette.text
+                                        } else {
+                                            palette.text_muted
+                                        }),
+                                )
+                                .clicked()
+                            {
+                                dialog.draft.mode = mode;
+                            }
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("REGISTER")
+                                .size(9.5)
+                                .strong()
+                                .color(palette.text_faint),
+                        );
+                        egui::ComboBox::from_id_salt("provider_dialog_register")
+                            .selected_text(
+                                RichText::new(dialog.draft.register.label())
+                                    .size(12.0)
+                                    .color(palette.text),
+                            )
+                            .width(140.0)
+                            .show_ui(ui, |ui| {
+                                for option in Register::ALL {
+                                    ui.selectable_value(
+                                        &mut dialog.draft.register,
+                                        option,
+                                        option.label(),
+                                    );
+                                }
+                            });
+                    });
+
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("CONTEXT HINT")
+                            .size(9.5)
+                            .strong()
+                            .color(palette.text_faint),
+                    );
+                    ui.add(
+                        TextEdit::singleline(&mut dialog.draft.context)
+                            .char_limit(300)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("e.g. flirty conversation between friends")
+                            .font(FontId::proportional(12.5)),
+                    );
+                    ui.label(
+                        RichText::new("Optional. Appended to the prompt as context.")
+                            .size(10.0)
+                            .color(palette.text_faint),
+                    );
+
+                    if dialog.draft.mode == TranslationMode::Multi {
+                        ui.add_space(4.0);
+                        hairline(ui, palette);
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("# OF TRANSLATIONS")
+                                    .size(9.5)
+                                    .strong()
+                                    .color(palette.text_faint),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut dialog.draft.variants, 1..=MAX_VARIANTS)
+                                    .integer(),
+                            );
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("TEMPERATURE")
+                                    .size(9.5)
+                                    .strong()
+                                    .color(palette.text_faint),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut dialog.draft.temperature, 0.0..=2.0)
+                                    .step_by(0.1),
+                            );
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("NUCLEUS (TOP_P)")
+                                    .size(9.5)
+                                    .strong()
+                                    .color(palette.text_faint),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut dialog.draft.top_p, 0.05..=1.0)
+                                    .step_by(0.05),
+                            );
+                        });
+
+                        ui.label(
+                            RichText::new(
+                                "Above 2.0 some backends reject the request; above ~4.0 output degrades into noise.",
+                            )
+                            .size(10.0)
+                            .color(palette.text_faint),
+                        );
+                    }
+
+                    if dialog.draft.model.is_cloud() {
+                        ui.add(
+                            Label::new(
+                                RichText::new(
+                                    "Cloud model: translated text is sent to Ollama Cloud.",
+                                )
+                                .size(10.5)
+                                .color(palette.text_faint),
+                            )
+                            .wrap(),
+                        );
+                    }
+                } else if !signed_in {
+                    ui.label(
+                        RichText::new(
+                            "Sign in with DeepL in Settings before translating with this provider.",
+                        )
+                        .size(10.5)
+                        .color(palette.warning),
+                    );
+                }
+
+                ui.add_space(6.0);
+                hairline(ui, palette);
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    let label = if adding { "Add provider" } else { "Save" };
+                    if primary_button(ui, label, true, palette).clicked() {
+                        save = true;
+                    }
+                    if text_button(ui, "Cancel", palette).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if save {
+            self.save_slot(dialog.draft.clone());
+            self.provider_dialog = None;
+            self.focus_source = true;
+        } else if close {
+            self.provider_dialog = None;
+            self.focus_source = true;
+        } else {
+            self.provider_dialog = Some(dialog);
+        }
+    }
+
+    fn close_overlays(&mut self) -> bool {
+        if self.provider_dialog.is_some() {
+            self.provider_dialog = None;
+            self.focus_source = true;
+            return true;
+        }
+        if self.settings_open {
+            self.settings_open = false;
+            self.focus_source = true;
+            return true;
+        }
+        false
+    }
 }
 
 impl eframe::App for TranslationAmigoApp {
@@ -1746,6 +2001,7 @@ impl eframe::App for TranslationAmigoApp {
             .show(ctx, |ui| self.ui_root(ui, ctx, &palette));
 
         self.ui_settings(ctx, &palette);
+        self.ui_provider_dialog(ctx, &palette);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1755,37 +2011,12 @@ impl eframe::App for TranslationAmigoApp {
 
 // ------------------------------------------------------------------ widgets
 
-fn provider_row(
-    ui: &mut Ui,
-    provider: Provider,
-    enabled: &mut bool,
-    pair: &mut LangPair,
-    configured: bool,
-    palette: &Palette,
-    setup_requested: &mut bool,
-) {
+/// Language pair controls shared by the add and edit dialogs.
+fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Palette) {
     let mut swap = false;
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-
-        ui.checkbox(enabled, "");
-
-        ui.label(
-            RichText::new(provider.label())
-                .size(12.5)
-                .strong()
-                .color(if *enabled {
-                    palette.text
-                } else {
-                    palette.text_muted
-                }),
-        );
-
-        if !*enabled {
-            ui.label(RichText::new("Off").size(11.0).color(palette.text_faint));
-            return;
-        }
 
         ui.label(
             RichText::new("From")
@@ -1794,22 +2025,22 @@ fn provider_row(
                 .color(palette.text_faint),
         );
 
-        egui::ComboBox::from_id_salt(format!("{}_{}", provider.settings_key(), "source"))
+        egui::ComboBox::from_id_salt("provider_dialog_source")
             .selected_text(
                 RichText::new(pair.source.label())
                     .size(12.5)
                     .strong()
                     .color(palette.text),
             )
-            .width(142.0)
+            .width(150.0)
             .show_ui(ui, |ui| {
                 for language in SOURCE_LANGUAGES {
                     ui.selectable_value(&mut pair.source, *language, language.label());
                 }
             });
 
-        if !allowed_targets(pair.source).contains(&pair.target) {
-            pair.target = target_for_source(pair.source, pair.target);
+        if !allowed_targets_for(kind, pair.source).contains(&pair.target) {
+            pair.target = target_for_source_with(kind, pair.source, pair.target);
         }
 
         ui.add_space(2.0);
@@ -1825,15 +2056,15 @@ fn provider_row(
                 .color(palette.text_faint),
         );
 
-        let allowed = allowed_targets(pair.source);
-        egui::ComboBox::from_id_salt(format!("{}_{}", provider.settings_key(), "target"))
+        let allowed = allowed_targets_for(kind, pair.source);
+        egui::ComboBox::from_id_salt("provider_dialog_target")
             .selected_text(
                 RichText::new(pair.target.label())
                     .size(12.5)
                     .strong()
                     .color(palette.text),
             )
-            .width(196.0)
+            .width(190.0)
             .show_ui(ui, |ui| {
                 for language in TARGET_LANGUAGES {
                     if allowed.contains(language) {
@@ -1843,18 +2074,7 @@ fn provider_row(
             });
 
         if !allowed.contains(&pair.target) {
-            pair.target = target_for_source(pair.source, pair.target);
-        }
-
-        if !configured {
-            let label = if provider == Provider::DeepL {
-                "Sign in"
-            } else {
-                "Set up"
-            };
-            if text_button(ui, label, palette).clicked() {
-                *setup_requested = true;
-            }
+            pair.target = target_for_source_with(kind, pair.source, pair.target);
         }
     });
 
@@ -1865,41 +2085,137 @@ fn provider_row(
     }
 }
 
+fn model_combo(
+    ui: &mut Ui,
+    slot: &mut ProviderSlot,
+    palette: &Palette,
+    status: Option<&OllamaStatus>,
+) {
+    let available = |model: OllamaModel| status.map(|s| s.can_use(model)).unwrap_or(false);
+
+    egui::ComboBox::from_id_salt("provider_dialog_model")
+        .selected_text(
+            RichText::new(slot.model.label())
+                .size(12.0)
+                .color(palette.text),
+        )
+        .width(210.0)
+        .show_ui(ui, |ui| {
+            for option in OllamaModel::ALL {
+                let enabled = available(option);
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui.selectable_value(&mut slot.model, option, option.label());
+                });
+            }
+        });
+
+    if !available(slot.model) {
+        ui.label(
+            RichText::new("This model isn't available yet. Check Settings for Ollama status.")
+                .size(10.5)
+                .color(palette.warning),
+        );
+    }
+}
+
+fn result_card(ui: &mut Ui, palette: &Palette, add_contents: impl FnOnce(&mut Ui)) {
+    let width = ui.available_width();
+
+    Frame::new()
+        .fill(palette.surface)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width((width - 28.0).max(80.0));
+            add_contents(ui);
+        });
+}
+
+/// Heading button that opens the add-provider dialog.
+fn add_provider_button(ui: &mut Ui, palette: &Palette) -> bool {
+    let width = ui.available_width();
+    let mut clicked = false;
+
+    Frame::new()
+        .fill(palette.surface_muted)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(12, 7))
+        .show(ui, |ui| {
+            ui.set_width((width - 24.0).max(120.0));
+            ui.horizontal(|ui| {
+                if text_button(ui, "+ Add Translation Provider", palette).clicked() {
+                    clicked = true;
+                }
+            });
+        });
+
+    clicked
+}
+
+fn slot_summary(slot: &ProviderSlot) -> String {
+    let pair = format!("{} -> {}", slot.pair.source.code(), slot.pair.target.code());
+
+    match slot.kind {
+        Provider::DeepL => format!("DeepL · {pair}"),
+        Provider::Ollama => match slot.mode {
+            TranslationMode::Single => format!("Ollama · {} · {pair}", slot.model.label()),
+            TranslationMode::Multi => format!(
+                "Ollama · {} · {pair} · {} variants",
+                slot.model.label(),
+                slot.count()
+            ),
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn result_section(
     ui: &mut Ui,
-    provider: Provider,
+    slot: &ProviderSlot,
     outcome: &ProviderOutcome,
     configured: bool,
     source_text: &str,
     now: f64,
     palette: &Palette,
-    copy_requested: &mut Option<Provider>,
+    copy_requested: &mut Option<(u64, Option<usize>)>,
+    edit_requested: &mut Option<u64>,
+    delete_requested: &mut Option<u64>,
     settings_requested: &mut bool,
 ) {
-    let stale = outcome
-        .translation
-        .as_ref()
-        .map(|_| outcome.source_text != source_text)
-        .unwrap_or(false);
+    let stale = !outcome.translations.is_empty() && outcome.source_text != source_text;
     let copied = outcome
         .copied_at
         .map(|copied_at| now - copied_at < 1.6)
         .unwrap_or(false);
     let translating = outcome.status == RunState::Translating;
+    let multiple = outcome.translations.len() > 1;
 
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(
-            RichText::new(provider.label())
+            RichText::new(slot_summary(slot))
                 .size(12.5)
                 .strong()
                 .color(palette.text),
         );
+
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if outcome.translation.is_some() {
-                let label = if copied { "Copied" } else { "Copy" };
+            if text_button(ui, "×", palette).clicked() {
+                *delete_requested = Some(slot.id);
+            }
+            if text_button(ui, "Configure", palette).clicked() {
+                *edit_requested = Some(slot.id);
+            }
+            if !multiple && !outcome.translations.is_empty() {
+                let label = if copied && outcome.copied_index.is_none() {
+                    "Copied"
+                } else {
+                    "Copy"
+                };
                 if text_button(ui, label, palette).clicked() {
-                    *copy_requested = Some(provider);
+                    *copy_requested = Some((slot.id, None));
                 }
             }
 
@@ -1908,10 +2224,10 @@ fn result_section(
             } else if stale {
                 "Text changed".to_string()
             } else if let Some(ms) = outcome.elapsed_ms {
-                if outcome.translation.is_some() {
-                    format!("{ms} ms")
-                } else {
+                if outcome.translations.is_empty() {
                     String::new()
+                } else {
+                    format!("{ms} ms")
                 }
             } else {
                 String::new()
@@ -1960,21 +2276,55 @@ fn result_section(
                 *settings_requested = true;
             }
         }
-    } else if let Some(translation) = &outcome.translation {
-        ui.add(
-            Label::new(
-                RichText::new(&translation.text)
-                    .size(15.5)
-                    .color(palette.text),
-            )
-            .selectable(true)
-            .wrap(),
-        );
+    } else if !outcome.translations.is_empty() {
+        for (index, translation) in outcome.translations.iter().enumerate() {
+            if index > 0 {
+                ui.add_space(8.0);
+                hairline(ui, palette);
+                ui.add_space(8.0);
+            }
+
+            if multiple {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let text_width = (ui.available_width() - 58.0).max(80.0);
+                    ui.scope(|ui| {
+                        ui.set_max_width(text_width);
+                        ui.add(
+                            Label::new(
+                                RichText::new(&translation.text)
+                                    .size(15.5)
+                                    .color(palette.text),
+                            )
+                            .selectable(true)
+                            .wrap(),
+                        );
+                    });
+
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        let item_copied = copied && outcome.copied_index == Some(index);
+                        let label = if item_copied { "Copied" } else { "Copy" };
+                        if text_button(ui, label, palette).clicked() {
+                            *copy_requested = Some((slot.id, Some(index)));
+                        }
+                    });
+                });
+            } else {
+                ui.add(
+                    Label::new(
+                        RichText::new(&translation.text)
+                            .size(15.5)
+                            .color(palette.text),
+                    )
+                    .selectable(true)
+                    .wrap(),
+                );
+            }
+        }
     } else if !configured {
-        let message = if provider == Provider::DeepL {
-            "Sign in with DeepL to use this provider."
-        } else {
-            "Start Ollama and install a supported model to use this provider."
+        let message = match slot.kind {
+            Provider::DeepL => "Sign in with DeepL to use this provider.",
+            Provider::Ollama => "Start Ollama and choose an available model to use this provider.",
         };
         ui.label(RichText::new(message).size(12.0).color(palette.text_muted));
         ui.add_space(4.0);
@@ -2221,5 +2571,119 @@ fn open_url(url: &str) {
     #[cfg(target_os = "linux")]
     {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deepl_core::Language;
+
+    fn legacy(deepl: bool, ollama: bool) -> Preferences {
+        Preferences {
+            providers: Vec::new(),
+            next_slot_id: 0,
+            auto_translate: false,
+            verbose_logging: false,
+            legacy_deepl_pair: LangPair {
+                source: Language::English,
+                target: Language::Spanish,
+            },
+            legacy_ollama_pair: LangPair {
+                source: Language::English,
+                target: Language::PortuguesePortugal,
+            },
+            legacy_deepl_enabled: deepl,
+            legacy_ollama_enabled: ollama,
+            legacy_ollama_model: OllamaModel::Gemma4Cloud,
+            legacy_register: Register::Formal,
+        }
+    }
+
+    #[test]
+    fn migrates_the_single_provider_layout() {
+        let mut prefs = legacy(true, true);
+        prefs.migrate();
+
+        assert_eq!(prefs.providers.len(), 2);
+        assert_eq!(prefs.providers[0].kind, Provider::DeepL);
+        assert_eq!(prefs.providers[0].pair.target, Language::Spanish);
+        assert_eq!(prefs.providers[1].kind, Provider::Ollama);
+        assert_eq!(prefs.providers[1].model, OllamaModel::Gemma4Cloud);
+        assert_eq!(prefs.providers[1].register, Register::Formal);
+        assert_eq!(prefs.providers[1].pair.target, Language::PortuguesePortugal);
+        assert_eq!(prefs.next_slot_id, 3);
+    }
+
+    #[test]
+    fn migration_keeps_an_untouched_workspace() {
+        let mut prefs = legacy(true, true);
+        prefs.providers = vec![ProviderSlot {
+            id: 7,
+            kind: Provider::Ollama,
+            ..ProviderSlot::default()
+        }];
+        prefs.next_slot_id = 0;
+
+        prefs.migrate();
+
+        assert_eq!(prefs.providers.len(), 1);
+        assert_eq!(prefs.providers[0].id, 7);
+        assert_eq!(prefs.next_slot_id, 8);
+    }
+
+    #[test]
+    fn single_mode_is_greedy() {
+        let slot = ProviderSlot {
+            mode: TranslationMode::Single,
+            temperature: DEFAULT_MULTI_TEMPERATURE,
+            ..ProviderSlot::default()
+        };
+
+        assert_eq!(slot.sampling().temperature, 0.0);
+        assert_eq!(slot.count(), 1);
+    }
+
+    #[test]
+    fn multi_mode_uses_the_configured_sampling() {
+        let slot = ProviderSlot {
+            mode: TranslationMode::Multi,
+            variants: 5,
+            temperature: DEFAULT_MULTI_TEMPERATURE,
+            top_p: DEFAULT_MULTI_TOP_P,
+            ..ProviderSlot::default()
+        };
+
+        assert_eq!(slot.sampling().temperature, 1.7);
+        assert_eq!(slot.sampling().top_p, 0.95);
+        assert_eq!(slot.count(), 5);
+    }
+
+    #[test]
+    fn context_is_trimmed_and_optional() {
+        let blank = ProviderSlot {
+            context: "   ".to_string(),
+            ..ProviderSlot::default()
+        };
+        assert_eq!(blank.context(), None);
+
+        let filled = ProviderSlot {
+            context: "  flirty chat between friends ".to_string(),
+            ..ProviderSlot::default()
+        };
+        assert_eq!(filled.context(), Some("flirty chat between friends"));
+    }
+
+    #[test]
+    fn variant_count_is_clamped() {
+        let mut slot = ProviderSlot {
+            mode: TranslationMode::Multi,
+            ..ProviderSlot::default()
+        };
+
+        slot.variants = 0;
+        assert_eq!(slot.count(), 1);
+        slot.variants = 99;
+        assert_eq!(slot.count(), MAX_VARIANTS);
     }
 }

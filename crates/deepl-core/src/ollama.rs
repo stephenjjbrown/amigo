@@ -11,20 +11,40 @@ pub const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 pub const OLLAMA_CHAT_URL: &str = "http://127.0.0.1:11434/api/chat";
 pub const OLLAMA_TAGS_URL: &str = "http://127.0.0.1:11434/api/tags";
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sampling {
+    pub temperature: f32,
+    pub top_p: f32,
+}
+
+impl Default for Sampling {
+    fn default() -> Self {
+        // Greedy decoding is the right default for a single translation.
+        Self {
+            temperature: 0.0,
+            top_p: 0.95,
+        }
+    }
+}
+
+pub const MAX_VARIANTS: usize = 10;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OllamaModel {
     #[default]
     TranslateGemma4b,
     TranslateGemma12b,
     TranslateGemma27b,
+    Gemma4Cloud,
     DeepSeekV41FlashCloud,
 }
 
 impl OllamaModel {
-    pub const ALL: [OllamaModel; 4] = [
+    pub const ALL: [OllamaModel; 5] = [
         Self::TranslateGemma4b,
         Self::TranslateGemma12b,
         Self::TranslateGemma27b,
+        Self::Gemma4Cloud,
         Self::DeepSeekV41FlashCloud,
     ];
 
@@ -33,6 +53,7 @@ impl OllamaModel {
             Self::TranslateGemma4b => "translategemma:4b",
             Self::TranslateGemma12b => "translategemma:12b",
             Self::TranslateGemma27b => "translategemma:27b",
+            Self::Gemma4Cloud => "gemma4:cloud",
             Self::DeepSeekV41FlashCloud => "deepseek-v4.1-flash:cloud",
         }
     }
@@ -42,6 +63,7 @@ impl OllamaModel {
             Self::TranslateGemma4b => "TranslateGemma 4B",
             Self::TranslateGemma12b => "TranslateGemma 12B",
             Self::TranslateGemma27b => "TranslateGemma 27B",
+            Self::Gemma4Cloud => "Gemma 4 31B (cloud)",
             Self::DeepSeekV41FlashCloud => "DeepSeek V4.1 Flash (cloud)",
         }
     }
@@ -111,6 +133,14 @@ impl OllamaStatus {
 
     pub fn has_model(&self, model: &str) -> bool {
         self.models.iter().any(|installed| installed == model)
+    }
+
+    /// Whether `model` can be sent to the daemon right now.
+    ///
+    /// Cloud models are hosted by Ollama, so they need no download and may not
+    /// be listed by `/api/tags` until they have been used once.
+    pub fn can_use(&self, model: OllamaModel) -> bool {
+        self.running && (model.is_cloud() || self.has_model(model.id()))
     }
 }
 
@@ -199,6 +229,31 @@ impl OllamaClient {
         register: Register,
         context: Option<&str>,
     ) -> Result<Translation, ApiError> {
+        let mut variants = self.translate_variants(
+            text,
+            source,
+            target,
+            register,
+            context,
+            Sampling::default(),
+            1,
+        )?;
+        Ok(variants.remove(0))
+    }
+
+    /// Ask for `count` samples of the same translation. With `temperature` at 0
+    /// every sample is identical, so variation needs a sampling temperature.
+    #[allow(clippy::too_many_arguments)]
+    pub fn translate_variants(
+        &self,
+        text: &str,
+        source: Language,
+        target: Language,
+        register: Register,
+        context: Option<&str>,
+        sampling: Sampling,
+        count: usize,
+    ) -> Result<Vec<Translation>, ApiError> {
         let characters = text.chars().count();
         if characters > MAX_TRANSLATION_CHARS {
             return Err(ApiError::input(format!(
@@ -206,64 +261,73 @@ impl OllamaClient {
             )));
         }
 
-        let payload = serde_json::json!({
-            "model": self.model,
-            "messages": [{
-                "role": "user",
-                "content": build_prompt(text, source, target, register, context),
-            }],
-            "stream": false,
-            "think": false,
-            "options": {
-                "temperature": 0,
-            },
-        });
+        let prompt = build_prompt(text, source, target, register, context);
+        let count = count.clamp(1, MAX_VARIANTS);
+        let mut translations = Vec::with_capacity(count);
 
-        let response = match self
-            .http
-            .post(OLLAMA_CHAT_URL)
-            .header("Accept", "application/json")
-            .json(&payload)
-            .send()
-        {
-            Ok(response) => response,
-            Err(error) if error.is_connect() || error.is_timeout() => {
-                return Err(ApiError::network(
-                    "Ollama isn't running. Start it with `ollama serve` and try again.",
+        for _ in 0..count {
+            let payload = serde_json::json!({
+                "model": self.model,
+                "messages": [{
+                    "role": "user",
+                    "content": prompt,
+                }],
+                "stream": false,
+                "think": false,
+                "options": {
+                    "temperature": sampling.temperature,
+                    "top_p": sampling.top_p,
+                },
+            });
+
+            let response = match self
+                .http
+                .post(OLLAMA_CHAT_URL)
+                .header("Accept", "application/json")
+                .json(&payload)
+                .send()
+            {
+                Ok(response) => response,
+                Err(error) if error.is_connect() || error.is_timeout() => {
+                    return Err(ApiError::network(
+                        "Ollama isn't running. Start it with `ollama serve` and try again.",
+                    ));
+                }
+                Err(error) => {
+                    return Err(ApiError::network(format!(
+                        "The request to Ollama failed: {error}"
+                    )));
+                }
+            };
+
+            let status = response.status();
+            let body = response.text().map_err(ApiError::from)?;
+
+            if !status.is_success() {
+                return Err(map_ollama_error(status.as_u16(), &body, &self.model));
+            }
+
+            let parsed: ChatResponse = serde_json::from_str(&body).map_err(|error| {
+                ApiError::api(format!(
+                    "Ollama sent a response this app could not read ({error})."
+                ))
+            })?;
+
+            let translation = parsed.message.content.trim();
+            if translation.is_empty() {
+                return Err(ApiError::api(
+                    "Ollama returned an empty translation. Try a smaller model or shorter text.",
                 ));
             }
-            Err(error) => {
-                return Err(ApiError::network(format!(
-                    "The request to Ollama failed: {error}"
-                )));
-            }
-        };
 
-        let status = response.status();
-        let body = response.text().map_err(ApiError::from)?;
-
-        if !status.is_success() {
-            return Err(map_ollama_error(status.as_u16(), &body, &self.model));
+            translations.push(Translation {
+                text: translation.to_string(),
+                detected_source_language: Some(source.code().to_string()),
+                billed_characters: None,
+            });
         }
 
-        let parsed: ChatResponse = serde_json::from_str(&body).map_err(|error| {
-            ApiError::api(format!(
-                "Ollama sent a response this app could not read ({error})."
-            ))
-        })?;
-
-        let translation = parsed.message.content.trim();
-        if translation.is_empty() {
-            return Err(ApiError::api(
-                "Ollama returned an empty translation. Try a smaller model or shorter text.",
-            ));
-        }
-
-        Ok(Translation {
-            text: translation.to_string(),
-            detected_source_language: Some(source.code().to_string()),
-            billed_characters: None,
-        })
+        Ok(translations)
     }
 }
 
@@ -522,11 +586,39 @@ mod tests {
     }
 
     #[test]
+    fn cloud_models_need_no_download() {
+        let status = OllamaStatus {
+            running: true,
+            models: vec!["translategemma:4b".to_string()],
+        };
+
+        assert!(status.can_use(OllamaModel::Gemma4Cloud));
+        assert!(status.can_use(OllamaModel::TranslateGemma4b));
+        assert!(!status.can_use(OllamaModel::TranslateGemma12b));
+    }
+
+    #[test]
+    fn stopped_daemon_can_use_nothing() {
+        let status = OllamaStatus::not_running();
+
+        assert!(!status.can_use(OllamaModel::Gemma4Cloud));
+        assert!(!status.can_use(OllamaModel::TranslateGemma4b));
+    }
+
+    #[test]
     fn deepseek_cloud_is_selectable() {
         let model = OllamaModel::DeepSeekV41FlashCloud;
         assert_eq!(model.id(), "deepseek-v4.1-flash:cloud");
         assert!(model.is_cloud());
         assert!(!OllamaModel::TranslateGemma4b.is_cloud());
+    }
+
+    #[test]
+    fn gemma4_cloud_is_selectable() {
+        let model = OllamaModel::Gemma4Cloud;
+        assert_eq!(model.id(), "gemma4:cloud");
+        assert_eq!(model.label(), "Gemma 4 31B (cloud)");
+        assert!(model.is_cloud());
     }
 
     #[test]
