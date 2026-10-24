@@ -1,0 +1,11 @@
+[package]
+name = "deepl-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+deepl-core = { path = "../deepl-core" }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }

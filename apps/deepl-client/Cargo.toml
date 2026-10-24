@@ -1,0 +1,24 @@
+[package]
+name = "deepl-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "deepl-client"
+path = "src/main.rs"
+
+[dependencies]
+deepl-core = { path = "../../crates/deepl-core" }
+deepl-engine = { path = "../../crates/deepl-engine" }
+eframe = { version = "0.32", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "persistence",
+    "wgpu",
+] }
+egui = "0.32"
+log = { workspace = true }
+serde = { workspace = true }
+# eframe's wgpu feature does not select a backend; enable Metal on macOS.
+wgpu = { version = "25", features = ["metal"] }
