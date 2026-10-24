@@ -42,6 +42,8 @@ pub struct TypeScale {
     pub title: f32,
     /// The app name.
     pub display: f32,
+    /// Icon glyphs inside buttons.
+    pub glyph: f32,
 }
 
 pub const TYPE: TypeScale = TypeScale {
@@ -53,6 +55,7 @@ pub const TYPE: TypeScale = TypeScale {
     large: 14.0,
     title: 15.5,
     display: 20.0,
+    glyph: 24.0,
 };
 
 const SEMIBOLD: &str = "semibold";
@@ -76,8 +79,10 @@ pub struct Palette {
     pub text_muted: Color32,
     pub text_faint: Color32,
     pub accent: Color32,
-    pub accent_contrast: Color32,
     pub accent_soft: Color32,
+    /// Fill and text for primary actions.
+    pub primary: Color32,
+    pub primary_contrast: Color32,
     pub danger: Color32,
     pub danger_soft: Color32,
     pub danger_border: Color32,
@@ -101,8 +106,9 @@ impl Palette {
                 text_muted: Color32::from_rgb(0x8d, 0x95, 0xa3),
                 text_faint: Color32::from_rgb(0x6b, 0x73, 0x80),
                 accent: Color32::from_rgb(0x4c, 0x9b, 0xff),
-                accent_contrast: Color32::from_rgb(0x07, 0x13, 0x1f),
                 accent_soft: Color32::from_rgba_unmultiplied(76, 155, 255, 36),
+                primary: Color32::from_rgb(0x4a, 0xde, 0x80),
+                primary_contrast: Color32::from_rgb(0x06, 0x1a, 0x0f),
                 danger: Color32::from_rgb(0xff, 0x8d, 0x82),
                 danger_soft: Color32::from_rgba_unmultiplied(180, 35, 24, 40),
                 danger_border: Color32::from_rgba_unmultiplied(255, 141, 130, 76),
@@ -123,8 +129,9 @@ impl Palette {
                 text_muted: Color32::from_rgb(0x66, 0x70, 0x85),
                 text_faint: Color32::from_rgb(0x98, 0xa2, 0xb3),
                 accent: Color32::from_rgb(0x0f, 0x3d, 0x63),
-                accent_contrast: Color32::from_rgb(0xff, 0xff, 0xff),
                 accent_soft: Color32::from_rgba_unmultiplied(15, 61, 99, 20),
+                primary: Color32::from_rgb(0x06, 0x76, 0x47),
+                primary_contrast: Color32::from_rgb(0xff, 0xff, 0xff),
                 danger: Color32::from_rgb(0xb4, 0x23, 0x18),
                 danger_soft: Color32::from_rgb(0xfe, 0xf3, 0xf2),
                 danger_border: Color32::from_rgba_unmultiplied(180, 35, 24, 56),
@@ -142,7 +149,7 @@ impl Palette {
         };
 
         visuals.override_text_color = Some(self.text);
-        visuals.weak_text_alpha = 0.5;
+        visuals.weak_text_alpha = 0.35;
         visuals.panel_fill = self.bg;
         visuals.window_fill = self.surface;
         visuals.extreme_bg_color = self.surface_muted;

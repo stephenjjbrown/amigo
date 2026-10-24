@@ -20,6 +20,15 @@ const STACKED_LAYOUT_THRESHOLD: f32 = 760.0;
 const DEFAULT_VARIANTS: usize = 5;
 const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
 const DEFAULT_MULTI_TOP_P: f32 = 0.95;
+/// Every button is this tall, so primary and secondary actions line up.
+const BUTTON_HEIGHT: f32 = 32.0;
+/// Padding inside a one-line text input.
+const INPUT_MARGIN: Margin = Margin {
+    left: 10,
+    right: 10,
+    top: 8,
+    bottom: 8,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 enum TranslationMode {
@@ -1765,10 +1774,10 @@ impl TranslationAmigoApp {
                     .fill(palette.surface)
                     .stroke(Stroke::new(1.0_f32, palette.border_strong))
                     .corner_radius(CornerRadius::same(RADIUS.lg))
-                    .inner_margin(Margin::same(20)),
+                    .inner_margin(Margin::same(16)),
             )
             .show(ctx, |ui| {
-                ui.set_width(dialog_width - 40.0);
+                ui.set_width(dialog_width - 32.0);
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
 
                 ui.horizontal(|ui| {
@@ -1781,13 +1790,15 @@ impl TranslationAmigoApp {
                         .font(semibold(TYPE.title))
                         .color(palette.text),
                     );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                         if close_button(ui, palette).clicked() {
                             close = true;
                         }
                     });
                 });
-                ui.add_space(10.0);
+                ui.add_space(6.0);
+                hairline(ui, palette);
+                ui.add_space(12.0);
 
                 let body_height = (screen.height() - 240.0).max(240.0);
                 ScrollArea::vertical()
@@ -1795,22 +1806,14 @@ impl TranslationAmigoApp {
                     .auto_shrink([false, true])
                     .max_height(body_height)
                     .show(ui, |ui| {
-                        ui.set_width(dialog_width - 40.0);
+                        ui.set_width(dialog_width - 32.0);
 
                         if adding {
                             let options =
                                 [(Provider::DeepL, "DeepL"), (Provider::Ollama, "Ollama")];
-                            if segmented_control(
-                                ui,
-                                &options,
-                                &mut dialog.draft.kind,
-                                96.0,
-                                palette,
-                            ) && !allowed_targets_for(
-                                dialog.draft.kind,
-                                dialog.draft.pair.source,
-                            )
-                            .contains(&dialog.draft.pair.target)
+                            if tab_bar(ui, &options, &mut dialog.draft.kind, palette)
+                                && !allowed_targets_for(dialog.draft.kind, dialog.draft.pair.source)
+                                    .contains(&dialog.draft.pair.target)
                             {
                                 dialog.draft.pair.target = target_for_source_with(
                                     dialog.draft.kind,
@@ -1861,8 +1864,11 @@ impl TranslationAmigoApp {
                                 TextEdit::singleline(&mut dialog.draft.context)
                                     .char_limit(300)
                                     .desired_width(f32::INFINITY)
-                                    .hint_text("e.g. flirty conversation between friends")
-                                    .font(FontId::proportional(TYPE.body)),
+                                    .hint_text(
+                                        "A chill conversation between close friends in Lisbon.",
+                                    )
+                                    .font(FontId::proportional(TYPE.body))
+                                    .margin(INPUT_MARGIN),
                             );
                             ui.label(
                                 RichText::new("Optional")
@@ -1988,6 +1994,96 @@ fn form_label(ui: &mut Ui, text: &str, palette: &Palette) {
 
 /// A two-or-more option segmented control. The selected segment is raised; the
 /// others stay flush with the container until hovered.
+/// A tab bar: text labels over a full-width rule, with an accent indicator under
+/// the selected tab. The rule fills the row, the tabs size to their labels.
+fn tab_bar<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    options: &[(T, &str)],
+    selected: &mut T,
+    palette: &Palette,
+) -> bool {
+    let mut changed = false;
+    let width = ui.available_width();
+    let height = 32.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let baseline = rect.bottom() - 1.0;
+
+    let mut tabs = Vec::with_capacity(options.len());
+    let mut x = rect.left();
+
+    for (value, label) in options {
+        let is_selected = *selected == *value;
+        let font = if is_selected {
+            semibold(TYPE.body)
+        } else {
+            FontId::proportional(TYPE.body)
+        };
+        let color = if is_selected {
+            palette.text
+        } else {
+            palette.text_muted
+        };
+
+        let galley = ui
+            .painter()
+            .layout_no_wrap((*label).to_owned(), font, color);
+        let tab_width = galley.size().x + 32.0;
+        let tab_rect = egui::Rect::from_min_size(
+            egui::pos2(x, rect.top()),
+            Vec2::new(tab_width, height - 1.0),
+        );
+        let response = ui.interact(tab_rect, ui.id().with(*label), Sense::click());
+
+        tabs.push((is_selected, galley, tab_rect, response));
+        x += tab_width;
+    }
+
+    let painter = ui.painter();
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), baseline),
+            egui::pos2(rect.right(), baseline),
+        ],
+        Stroke::new(1.0_f32, palette.border),
+    );
+
+    for (index, (is_selected, galley, tab_rect, response)) in tabs.iter().enumerate() {
+        let text_pos = egui::pos2(
+            tab_rect.center().x - galley.size().x / 2.0,
+            tab_rect.center().y - galley.size().y / 2.0,
+        );
+        painter.galley(text_pos, galley.clone(), palette.text);
+
+        if *is_selected {
+            painter.line_segment(
+                [
+                    egui::pos2(tab_rect.left() + 6.0, baseline),
+                    egui::pos2(tab_rect.right() - 6.0, baseline),
+                ],
+                Stroke::new(2.0_f32, palette.accent),
+            );
+        } else if response.hovered() {
+            painter.line_segment(
+                [
+                    egui::pos2(tab_rect.left() + 6.0, baseline),
+                    egui::pos2(tab_rect.right() - 6.0, baseline),
+                ],
+                Stroke::new(2.0_f32, palette.border_strong),
+            );
+        }
+
+        if response.clicked() {
+            let value = options[index].0;
+            if *selected != value {
+                *selected = value;
+                changed = true;
+            }
+        }
+    }
+
+    changed
+}
+
 fn segmented_control<T: Copy + PartialEq>(
     ui: &mut Ui,
     options: &[(T, &str)],
@@ -1996,35 +2092,69 @@ fn segmented_control<T: Copy + PartialEq>(
     palette: &Palette,
 ) -> bool {
     let mut changed = false;
+    let count = options.len();
+    let count_f = count as f32;
+    let available = ui.available_width();
+    let total = (min_width * count_f + (count_f - 1.0) + 2.0).min(available);
+    let segment_width = ((total - 2.0 - (count_f - 1.0)) / count_f).max(min_width);
+    let height = BUTTON_HEIGHT - 2.0;
 
     Frame::new()
         .fill(palette.surface_muted)
         .stroke(Stroke::new(1.0_f32, palette.border))
         .corner_radius(CornerRadius::same(RADIUS.sm))
-        .inner_margin(Margin::same(3))
+        .inner_margin(Margin::same(1))
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
             ui.horizontal(|ui| {
-                for (value, label) in options {
+                for (index, (value, label)) in options.iter().enumerate() {
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::new(segment_width, height), Sense::click());
                     let is_selected = *selected == *value;
-                    let text = if is_selected {
-                        RichText::new(*label)
-                            .font(semibold(TYPE.small))
-                            .color(palette.text)
-                    } else {
-                        RichText::new(*label)
-                            .size(TYPE.small)
-                            .color(palette.text_muted)
-                    };
+                    let painter = ui.painter();
 
-                    let mut button = Button::new(text)
-                        .frame(true)
-                        .min_size(Vec2::new(min_width, 26.0));
                     if is_selected {
-                        button = button.fill(palette.surface_strong);
+                        painter.rect_filled(
+                            rect,
+                            CornerRadius::same(RADIUS.sm.saturating_sub(1)),
+                            palette.surface_strong,
+                        );
+                    } else if response.hovered() {
+                        painter.rect_filled(
+                            rect,
+                            CornerRadius::same(0),
+                            palette.surface_strong.gamma_multiply(0.5),
+                        );
                     }
 
-                    if ui.add(button).clicked() && !is_selected {
+                    if index > 0 {
+                        painter.line_segment(
+                            [
+                                egui::pos2(rect.left(), rect.top() + 3.0),
+                                egui::pos2(rect.left(), rect.bottom() - 3.0),
+                            ],
+                            Stroke::new(1.0_f32, palette.border),
+                        );
+                    }
+
+                    let font = if is_selected {
+                        semibold(TYPE.small)
+                    } else {
+                        FontId::proportional(TYPE.small)
+                    };
+                    painter.text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        *label,
+                        font,
+                        if is_selected {
+                            palette.text
+                        } else {
+                            palette.text_muted
+                        },
+                    );
+
+                    if response.clicked() && !is_selected {
                         *selected = *value;
                         changed = true;
                     }
@@ -2447,14 +2577,14 @@ fn secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
                 .color(palette.text_secondary),
         )
         .frame(true)
-        .min_size(Vec2::new(0.0, 26.0)),
+        .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
     )
 }
 
 /// Close control for the dialogs. Quiet until hovered, but with a large
 /// hit target.
 fn close_button(ui: &mut Ui, palette: &Palette) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(36.0, 36.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(32.0, 32.0), Sense::click());
     let hovered = response.hovered();
 
     if hovered {
@@ -2466,7 +2596,7 @@ fn close_button(ui: &mut Ui, palette: &Palette) -> Response {
         rect.center(),
         Align2::CENTER_CENTER,
         "×",
-        FontId::proportional(TYPE.display),
+        FontId::proportional(TYPE.glyph),
         if hovered {
             palette.text
         } else {
@@ -2481,34 +2611,33 @@ fn danger_secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Respo
     ui.add(
         Button::new(RichText::new(label).size(TYPE.small).color(palette.danger))
             .frame(true)
-            .min_size(Vec2::new(0.0, 26.0)),
+            .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
     )
 }
 
 fn primary_button(ui: &mut Ui, label: &str, enabled: bool, palette: &Palette) -> Response {
     let fill = if enabled {
-        palette.accent
+        palette.primary
     } else {
-        palette.accent.gamma_multiply(0.45)
+        palette.primary.gamma_multiply(0.45)
     };
     let text_color = if enabled {
-        palette.accent_contrast
+        palette.primary_contrast
     } else {
-        palette.accent_contrast.gamma_multiply(0.8)
+        palette.primary_contrast.gamma_multiply(0.8)
     };
 
     ui.add_enabled(
         enabled,
         Button::new(
             RichText::new(label)
-                .size(TYPE.heading)
-                .strong()
+                .font(semibold(TYPE.body))
                 .color(text_color),
         )
         .fill(fill)
         .stroke(Stroke::NONE)
         .corner_radius(CornerRadius::same(RADIUS.sm))
-        .min_size(Vec2::new(126.0, 38.0)),
+        .min_size(Vec2::new(120.0, BUTTON_HEIGHT)),
     )
 }
 
