@@ -36,8 +36,9 @@ const INPUT_MARGIN: Margin = Margin {
 /// stretches the previous drawable to the new size, which shows as a blip when
 /// switching Single/Multi. That is egui#8229, fixed in egui/eframe 0.35+; we are
 /// pinned to 0.32, so the window keeps one height that fits the tallest layout
-/// and Single mode simply has some empty space. Revisit with an eframe upgrade.
-const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 620.0);
+/// (Multi, with its three sliders) and Single mode simply has some empty space.
+/// Revisit with an eframe upgrade.
+const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 700.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 enum TranslationMode {
