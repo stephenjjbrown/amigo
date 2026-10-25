@@ -921,11 +921,15 @@ impl TranslationAmigoApp {
         let available = ui.available_width();
         let content_width = available.min(MAX_CONTENT_WIDTH);
         let left_gutter = ((available - content_width) / 2.0).max(0.0);
+        // Read the height before entering the horizontal layout: egui sizes a
+        // horizontal child to its row height (~18 px), so asking inside it returns
+        // that, not the window height.
+        let available_height = ui.available_height();
 
         ui.horizontal(|ui| {
             ui.add_space(left_gutter);
             ui.allocate_ui_with_layout(
-                Vec2::new(content_width, ui.available_height()),
+                Vec2::new(content_width, available_height),
                 Layout::top_down(Align::Min),
                 |ui| {
                     ui.set_width(content_width);
@@ -2347,18 +2351,21 @@ fn add_provider_button(ui: &mut Ui, palette: &Palette) -> bool {
     clicked
 }
 
-fn slot_summary(slot: &ProviderSlot) -> String {
-    let pair = format!("{} -> {}", slot.pair.source.code(), slot.pair.target.code());
+fn slot_title(slot: &ProviderSlot) -> String {
+    format!(
+        "{} · {} -> {}",
+        slot.kind.label(),
+        slot.pair.source.code(),
+        slot.pair.target.code()
+    )
+}
 
+fn slot_subtitle(slot: &ProviderSlot) -> String {
     match slot.kind {
-        Provider::DeepL => format!("DeepL · {pair}"),
+        Provider::DeepL => "Single translation".to_string(),
         Provider::Ollama => match slot.mode {
-            TranslationMode::Single => format!("Ollama · {} · {pair}", slot.model.label()),
-            TranslationMode::Multi => format!(
-                "Ollama · {} · {pair} · {} variants",
-                slot.model.label(),
-                slot.count()
-            ),
+            TranslationMode::Single => slot.model.label().to_string(),
+            TranslationMode::Multi => format!("{} · {} variants", slot.model.label(), slot.count()),
         },
     }
 }
@@ -2387,14 +2394,22 @@ fn result_section(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        ui.label(
-            RichText::new(slot_summary(slot))
-                .font(semibold(TYPE.body))
-                .color(palette.text),
-        );
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(
+                RichText::new(slot_title(slot))
+                    .font(semibold(TYPE.body))
+                    .color(palette.text),
+            );
+            ui.label(
+                RichText::new(slot_subtitle(slot))
+                    .size(TYPE.caption)
+                    .color(palette.text_faint),
+            );
+        });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if secondary_button(ui, "×", palette).clicked() {
+            if danger_secondary_button(ui, "Remove", palette).clicked() {
                 *delete_requested = Some(slot.id);
             }
             if secondary_button(ui, "Configure", palette).clicked() {
@@ -2647,15 +2662,22 @@ fn danger_secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Respo
 }
 
 fn primary_button(ui: &mut Ui, label: &str, enabled: bool, palette: &Palette) -> Response {
+    // A disabled primary drops its colour entirely, so it reads as unavailable
+    // rather than as a failed action.
     let fill = if enabled {
         palette.primary
     } else {
-        palette.primary.gamma_multiply(0.45)
+        palette.surface_muted
     };
     let text_color = if enabled {
         palette.primary_contrast
     } else {
-        palette.primary_contrast.gamma_multiply(0.8)
+        palette.text_faint
+    };
+    let stroke = if enabled {
+        Stroke::NONE
+    } else {
+        Stroke::new(1.0_f32, palette.border)
     };
 
     ui.add_enabled(
@@ -2666,7 +2688,7 @@ fn primary_button(ui: &mut Ui, label: &str, enabled: bool, palette: &Palette) ->
                 .color(text_color),
         )
         .fill(fill)
-        .stroke(Stroke::NONE)
+        .stroke(stroke)
         .corner_radius(CornerRadius::same(RADIUS.sm))
         .min_size(Vec2::new(120.0, BUTTON_HEIGHT)),
     )
