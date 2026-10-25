@@ -84,6 +84,8 @@ pub struct Palette {
     pub danger_soft: Color32,
     pub danger_border: Color32,
     pub success: Color32,
+    /// Background wash for inserted text in a diff.
+    pub success_soft: Color32,
     pub warning: Color32,
 }
 
@@ -110,6 +112,7 @@ impl Palette {
                 danger_soft: Color32::from_rgba_unmultiplied(180, 35, 24, 40),
                 danger_border: Color32::from_rgba_unmultiplied(255, 141, 130, 76),
                 success: Color32::from_rgb(0x4a, 0xde, 0x80),
+                success_soft: Color32::from_rgba_unmultiplied(74, 222, 128, 34),
                 warning: Color32::from_rgb(0xf0, 0xb4, 0x5a),
             }
         } else {
@@ -133,6 +136,7 @@ impl Palette {
                 danger_soft: Color32::from_rgb(0xfe, 0xf3, 0xf2),
                 danger_border: Color32::from_rgba_unmultiplied(180, 35, 24, 56),
                 success: Color32::from_rgb(0x06, 0x76, 0x47),
+                success_soft: Color32::from_rgba_unmultiplied(6, 118, 71, 26),
                 warning: Color32::from_rgb(0xb5, 0x47, 0x08),
             }
         }

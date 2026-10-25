@@ -12,6 +12,7 @@ use eframe::egui::{
     Response, RichText, ScrollArea, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 
+use crate::diff::{self, DiffOp};
 use crate::theme::{card_frame, inset_frame, panel_frame, semibold, Palette, RADIUS, TYPE};
 
 const AUTO_TRANSLATE_DELAY: f64 = 0.85;
@@ -38,7 +39,7 @@ const INPUT_MARGIN: Margin = Margin {
 /// pinned to 0.32, so the window keeps one height that fits the tallest layout
 /// (Multi, with its three sliders) and Single mode simply has some empty space.
 /// Revisit with an eframe upgrade.
-const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 700.0);
+const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 740.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 enum TranslationMode {
@@ -61,6 +62,10 @@ struct ProviderSlot {
     model: OllamaModel,
     #[serde(default)]
     mode: TranslationMode,
+    /// Present a multi translation as diffs against the most typical sample,
+    /// rather than as a flat list of samples.
+    #[serde(default = "default_true")]
+    diff_view: bool,
     #[serde(default)]
     register: Register,
     /// Situational context appended to this provider's prompt.
@@ -82,6 +87,7 @@ impl Default for ProviderSlot {
             pair: LangPair::default(),
             model: OllamaModel::default(),
             mode: TranslationMode::Single,
+            diff_view: true,
             register: Register::default(),
             context: String::new(),
             variants: DEFAULT_VARIANTS,
@@ -1858,6 +1864,16 @@ impl TranslationAmigoApp {
                     ];
                     segmented_control(ui, &modes, &mut dialog.draft.mode, 148.0, &palette);
 
+                    if dialog.draft.mode == TranslationMode::Multi {
+                        ui.add_space(10.0);
+                        ui.checkbox(
+                            &mut dialog.draft.diff_view,
+                            RichText::new("Show variations as diffs")
+                                .size(TYPE.small)
+                                .color(palette.text_secondary),
+                        );
+                    }
+
                     ui.add_space(14.0);
                     form_label(ui, "REGISTER", &palette);
                     egui::ComboBox::from_id_salt("provider_dialog_register")
@@ -2485,49 +2501,18 @@ fn result_section(
             }
         }
     } else if !outcome.translations.is_empty() {
-        for (index, translation) in outcome.translations.iter().enumerate() {
-            if index > 0 {
-                ui.add_space(8.0);
-                hairline(ui, palette);
-                ui.add_space(8.0);
-            }
-
-            if multiple {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let text_width = (ui.available_width() - 58.0).max(80.0);
-                    ui.scope(|ui| {
-                        ui.set_max_width(text_width);
-                        ui.add(
-                            Label::new(
-                                RichText::new(&translation.text)
-                                    .size(TYPE.title)
-                                    .color(palette.text),
-                            )
-                            .selectable(true)
-                            .wrap(),
-                        );
-                    });
-
-                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                        let item_copied = copied && outcome.copied_index == Some(index);
-                        let label = if item_copied { "Copied" } else { "Copy" };
-                        if secondary_button(ui, label, palette).clicked() {
-                            *copy_requested = Some((slot.id, Some(index)));
-                        }
-                    });
-                });
-            } else {
-                ui.add(
-                    Label::new(
-                        RichText::new(&translation.text)
-                            .size(TYPE.title)
-                            .color(palette.text),
-                    )
-                    .selectable(true)
-                    .wrap(),
-                );
-            }
+        if multiple {
+            render_variants(ui, slot, outcome, palette, copied, copy_requested);
+        } else {
+            ui.add(
+                Label::new(
+                    RichText::new(&outcome.translations[0].text)
+                        .size(TYPE.title)
+                        .color(palette.text),
+                )
+                .selectable(true)
+                .wrap(),
+            );
         }
     } else if !configured {
         let message = match slot.kind {
@@ -2553,6 +2538,190 @@ fn result_section(
 }
 
 // ------------------------------------------------------------------- helpers
+
+/// Multi-translation result: the most representative sample in full, then the
+/// others as word-level diffs against it, with identical samples grouped.
+fn render_variants(
+    ui: &mut Ui,
+    slot: &ProviderSlot,
+    outcome: &ProviderOutcome,
+    palette: &Palette,
+    copied: bool,
+    copy_requested: &mut Option<(u64, Option<usize>)>,
+) {
+    let samples: Vec<&str> = outcome
+        .translations
+        .iter()
+        .map(|translation| translation.text.as_str())
+        .collect();
+    let groups = diff::group(&samples);
+
+    if !slot.diff_view {
+        render_plain(ui, slot.id, outcome, palette, copied, copy_requested);
+        return;
+    }
+
+    if groups.len() == 1 {
+        let group = &groups[0];
+        let item_copied = copied && outcome.copied_index == Some(group.first_index);
+        variant_row(
+            ui,
+            slot.id,
+            group,
+            None,
+            item_copied,
+            palette,
+            copy_requested,
+        );
+        return;
+    }
+
+    let tokens: Vec<Vec<String>> = groups
+        .iter()
+        .map(|group| diff::tokenize(&group.text))
+        .collect();
+    let base = diff::medoid(&tokens);
+
+    // The reference sentence first, then the rest in the order they appeared.
+    let mut order = vec![base];
+    order.extend((0..groups.len()).filter(|index| *index != base));
+
+    for (position, index) in order.into_iter().enumerate() {
+        if position > 0 {
+            ui.add_space(8.0);
+            hairline(ui, palette);
+            ui.add_space(8.0);
+        }
+
+        let group = &groups[index];
+        let ops = (index != base).then(|| diff::diff(&tokens[base], &tokens[index]));
+        let item_copied = copied && outcome.copied_index == Some(group.first_index);
+
+        variant_row(
+            ui,
+            slot.id,
+            group,
+            ops.as_deref(),
+            item_copied,
+            palette,
+            copy_requested,
+        );
+    }
+}
+
+/// A flat list of every sample, for when diffs are switched off.
+fn render_plain(
+    ui: &mut Ui,
+    slot_id: u64,
+    outcome: &ProviderOutcome,
+    palette: &Palette,
+    copied: bool,
+    copy_requested: &mut Option<(u64, Option<usize>)>,
+) {
+    for (index, translation) in outcome.translations.iter().enumerate() {
+        if index > 0 {
+            ui.add_space(8.0);
+            hairline(ui, palette);
+            ui.add_space(8.0);
+        }
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let text_width = (ui.available_width() - 72.0).max(80.0);
+            ui.scope(|ui| {
+                ui.set_max_width(text_width);
+                ui.add(
+                    Label::new(
+                        RichText::new(&translation.text)
+                            .size(TYPE.title)
+                            .color(palette.text),
+                    )
+                    .selectable(true)
+                    .wrap(),
+                );
+            });
+
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                let item_copied = copied && outcome.copied_index == Some(index);
+                let label = if item_copied { "Copied" } else { "Copy" };
+                if secondary_button(ui, label, palette).clicked() {
+                    *copy_requested = Some((slot_id, Some(index)));
+                }
+            });
+        });
+    }
+}
+
+/// One entry in the variants list: the full sentence, or its diff against the
+/// reference, plus how many samples produced it.
+fn variant_row(
+    ui: &mut Ui,
+    slot_id: u64,
+    group: &diff::Variant,
+    ops: Option<&[DiffOp]>,
+    item_copied: bool,
+    palette: &Palette,
+    copy_requested: &mut Option<(u64, Option<usize>)>,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+
+        if group.count > 1 {
+            ui.label(
+                RichText::new(format!("×{}", group.count))
+                    .size(TYPE.micro)
+                    .color(palette.text_faint),
+            );
+        }
+
+        let text_width = (ui.available_width() - 72.0).max(80.0);
+        ui.scope(|ui| {
+            ui.set_max_width(text_width);
+            match ops {
+                None => {
+                    ui.add(
+                        Label::new(
+                            RichText::new(&group.text)
+                                .size(TYPE.title)
+                                .color(palette.text),
+                        )
+                        .selectable(true)
+                        .wrap(),
+                    );
+                }
+                Some(ops) => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 2.0);
+                        for op in ops {
+                            let rich = match op {
+                                DiffOp::Keep(text) => RichText::new(text)
+                                    .size(TYPE.title)
+                                    .color(palette.text_muted),
+                                DiffOp::Insert(text) => RichText::new(text)
+                                    .size(TYPE.title)
+                                    .color(palette.success)
+                                    .background_color(palette.success_soft),
+                                DiffOp::Delete(text) => RichText::new(text)
+                                    .size(TYPE.title)
+                                    .color(palette.danger)
+                                    .strikethrough()
+                                    .background_color(palette.danger_soft),
+                            };
+                            ui.label(rich);
+                        }
+                    });
+                }
+            }
+        });
+
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            let label = if item_copied { "Copied" } else { "Copy" };
+            if secondary_button(ui, label, palette).clicked() {
+                *copy_requested = Some((slot_id, Some(group.first_index)));
+            }
+        });
+    });
+}
 
 fn pane_header(
     ui: &mut Ui,
