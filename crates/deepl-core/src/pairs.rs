@@ -13,6 +13,10 @@ pub enum Language {
     PortuguesePortugal,
     PortugueseBrazil,
     PortugueseAngola,
+    PortugueseAzores,
+    SpanishArgentina,
+    SpanishColombia,
+    SpanishMexico,
 }
 
 impl Language {
@@ -25,6 +29,10 @@ impl Language {
             Self::PortuguesePortugal => "PT-PT",
             Self::PortugueseBrazil => "PT-BR",
             Self::PortugueseAngola => "PT-AO",
+            Self::PortugueseAzores => "PT-20",
+            Self::SpanishArgentina => "ES-AR",
+            Self::SpanishColombia => "ES-CO",
+            Self::SpanishMexico => "ES-MX",
         }
     }
 
@@ -36,6 +44,10 @@ impl Language {
             Self::PortuguesePortugal => "Portuguese (Portugal)",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
             Self::PortugueseAngola => "Portuguese (Angola)",
+            Self::PortugueseAzores => "Portuguese (Azores)",
+            Self::SpanishArgentina => "Spanish (Argentina)",
+            Self::SpanishColombia => "Spanish (Colombia)",
+            Self::SpanishMexico => "Spanish (Mexico)",
         }
     }
 
@@ -45,9 +57,13 @@ impl Language {
             Self::Portuguese
             | Self::PortuguesePortugal
             | Self::PortugueseBrazil
-            | Self::PortugueseAngola => "PT",
+            | Self::PortugueseAngola
+            | Self::PortugueseAzores => "PT",
             Self::English => "EN",
-            Self::Spanish => "ES",
+            Self::Spanish
+            | Self::SpanishArgentina
+            | Self::SpanishColombia
+            | Self::SpanishMexico => "ES",
         }
     }
 
@@ -55,14 +71,18 @@ impl Language {
     /// region must be explicit for PT, otherwise the service defaults to
     /// Brazilian Portuguese.
     ///
-    /// DeepL has no Angolan Portuguese target, so that pair is never offered for
-    /// a DeepL provider.
+    /// DeepL has no Angolan or Azorean Portuguese target and a single Spanish,
+    /// so those regional pairs are never offered for a DeepL provider.
     pub fn mcp_target_code(self) -> &'static str {
         match self {
-            Self::Portuguese | Self::PortuguesePortugal | Self::PortugueseAngola => "PT-PT",
+            Self::Portuguese
+            | Self::PortuguesePortugal
+            | Self::PortugueseAngola
+            | Self::PortugueseAzores => "PT-PT",
             Self::PortugueseBrazil => "PT-BR",
             Self::English => "EN",
             Self::Spanish => "ES",
+            Self::SpanishArgentina | Self::SpanishColombia | Self::SpanishMexico => "ES",
         }
     }
 
@@ -72,9 +92,13 @@ impl Language {
             Self::Portuguese
             | Self::PortuguesePortugal
             | Self::PortugueseBrazil
-            | Self::PortugueseAngola => "pt",
+            | Self::PortugueseAngola
+            | Self::PortugueseAzores => "pt",
             Self::English => "en",
-            Self::Spanish => "es",
+            Self::Spanish
+            | Self::SpanishArgentina
+            | Self::SpanishColombia
+            | Self::SpanishMexico => "es",
         }
     }
 
@@ -84,8 +108,13 @@ impl Language {
             Self::Portuguese | Self::PortuguesePortugal => "pt-PT",
             Self::PortugueseBrazil => "pt-BR",
             Self::PortugueseAngola => "pt-AO",
+            // ISO 3166-2:PT-20, the Azores as a Portuguese subdivision.
+            Self::PortugueseAzores => "pt-20",
             Self::English => "en",
             Self::Spanish => "es",
+            Self::SpanishArgentina => "es-AR",
+            Self::SpanishColombia => "es-CO",
+            Self::SpanishMexico => "es-MX",
         }
     }
 }
@@ -98,6 +127,10 @@ pub const TARGET_LANGUAGES: &[Language] = &[
     Language::PortuguesePortugal,
     Language::PortugueseBrazil,
     Language::PortugueseAngola,
+    Language::PortugueseAzores,
+    Language::SpanishArgentina,
+    Language::SpanishColombia,
+    Language::SpanishMexico,
     Language::Spanish,
 ];
 
@@ -123,6 +156,10 @@ pub const SUPPORTED_PAIRS: &[(Language, Language)] = &[
     (Language::English, Language::PortuguesePortugal),
     (Language::English, Language::PortugueseBrazil),
     (Language::English, Language::PortugueseAngola),
+    (Language::English, Language::PortugueseAzores),
+    (Language::English, Language::SpanishArgentina),
+    (Language::English, Language::SpanishColombia),
+    (Language::English, Language::SpanishMexico),
     (Language::English, Language::Spanish),
     (Language::Spanish, Language::English),
 ];
@@ -144,14 +181,19 @@ pub fn allowed_targets(source: Language) -> &'static [Language] {
             Language::Spanish,
         ],
         Language::Spanish => &[Language::English],
-        Language::PortuguesePortugal | Language::PortugueseBrazil | Language::PortugueseAngola => {
-            &[]
-        }
+        Language::PortuguesePortugal
+        | Language::PortugueseBrazil
+        | Language::PortugueseAngola
+        | Language::PortugueseAzores
+        | Language::SpanishArgentina
+        | Language::SpanishColombia
+        | Language::SpanishMexico => &[],
     }
 }
 
-/// Targets a specific provider can produce. Angolan Portuguese is only
-/// available through Ollama, because DeepL has no such target language.
+/// Targets a specific provider can produce. Angolan and Azorean Portuguese and
+/// regional Spanish are only available through Ollama, because DeepL has no such
+/// target languages.
 pub fn allowed_targets_for(provider: Provider, source: Language) -> &'static [Language] {
     match provider {
         Provider::DeepL => allowed_targets(source),
@@ -161,12 +203,20 @@ pub fn allowed_targets_for(provider: Provider, source: Language) -> &'static [La
                 Language::PortuguesePortugal,
                 Language::PortugueseBrazil,
                 Language::PortugueseAngola,
+                Language::PortugueseAzores,
                 Language::Spanish,
+                Language::SpanishArgentina,
+                Language::SpanishColombia,
+                Language::SpanishMexico,
             ],
             Language::Spanish => &[Language::English],
             Language::PortuguesePortugal
             | Language::PortugueseBrazil
-            | Language::PortugueseAngola => &[],
+            | Language::PortugueseAngola
+            | Language::PortugueseAzores
+            | Language::SpanishArgentina
+            | Language::SpanishColombia
+            | Language::SpanishMexico => &[],
         },
     }
 }
@@ -272,6 +322,10 @@ mod tests {
         assert_eq!(Language::PortuguesePortugal.code(), "PT-PT");
         assert_eq!(Language::PortugueseBrazil.code(), "PT-BR");
         assert_eq!(Language::PortugueseAngola.code(), "PT-AO");
+        assert_eq!(Language::PortugueseAzores.code(), "PT-20");
+        assert_eq!(Language::SpanishArgentina.code(), "ES-AR");
+        assert_eq!(Language::SpanishColombia.code(), "ES-CO");
+        assert_eq!(Language::SpanishMexico.code(), "ES-MX");
     }
 
     #[test]
@@ -293,8 +347,12 @@ mod tests {
         assert_eq!(Language::PortuguesePortugal.ollama_target_code(), "pt-PT");
         assert_eq!(Language::PortugueseBrazil.ollama_target_code(), "pt-BR");
         assert_eq!(Language::PortugueseAngola.ollama_target_code(), "pt-AO");
+        assert_eq!(Language::PortugueseAzores.ollama_target_code(), "pt-20");
         assert_eq!(Language::English.ollama_target_code(), "en");
         assert_eq!(Language::Spanish.ollama_target_code(), "es");
+        assert_eq!(Language::SpanishArgentina.ollama_target_code(), "es-AR");
+        assert_eq!(Language::SpanishColombia.ollama_target_code(), "es-CO");
+        assert_eq!(Language::SpanishMexico.ollama_target_code(), "es-MX");
     }
 
     #[test]
@@ -309,6 +367,33 @@ mod tests {
         assert!(is_supported_pair(
             Language::English,
             Language::PortugueseAngola
+        ));
+    }
+
+    #[test]
+    fn regional_spanish_is_ollama_only() {
+        for regional in [
+            Language::SpanishArgentina,
+            Language::SpanishColombia,
+            Language::SpanishMexico,
+        ] {
+            assert!(!allowed_targets(Language::English).contains(&regional));
+            assert!(!allowed_targets_for(Provider::DeepL, Language::English).contains(&regional));
+            assert!(allowed_targets_for(Provider::Ollama, Language::English).contains(&regional));
+            assert!(is_supported_pair(Language::English, regional));
+        }
+    }
+
+    #[test]
+    fn azorean_portuguese_is_ollama_only() {
+        assert!(!allowed_targets(Language::English).contains(&Language::PortugueseAzores));
+        assert!(!allowed_targets_for(Provider::DeepL, Language::English)
+            .contains(&Language::PortugueseAzores));
+        assert!(allowed_targets_for(Provider::Ollama, Language::English)
+            .contains(&Language::PortugueseAzores));
+        assert!(is_supported_pair(
+            Language::English,
+            Language::PortugueseAzores
         ));
     }
 
