@@ -171,6 +171,14 @@ struct Preset {
     providers: Vec<ProviderSlot>,
 }
 
+/// What the preset picker asked the top bar to do this frame.
+enum PresetAction {
+    Load(usize),
+    Rename(usize),
+    Delete(usize),
+    SaveNew,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Preferences {
     #[serde(default)]
@@ -1266,12 +1274,9 @@ impl TranslationAmigoApp {
 
     fn ui_top_bar(&mut self, ui: &mut Ui, palette: &Palette) {
         let mut open_settings = false;
-        let mut load = None;
-        let mut delete = None;
-        let mut rename = None;
-        let mut save_new = false;
         let presets = self.prefs.presets.clone();
         let active_label = self.active_preset_label();
+        let mut action = None;
 
         ui.horizontal(|ui| {
             ui.label(
@@ -1280,125 +1285,12 @@ impl TranslationAmigoApp {
                     .color(palette.text_muted),
             );
 
-            egui::ComboBox::from_id_salt("preset_picker")
-                .selected_text(
-                    RichText::new(active_label)
-                        .size(TYPE.small)
-                        .color(palette.text_secondary),
-                )
-                .width(320.0)
-                .height(BUTTON_HEIGHT)
-                .show_ui(ui, |ui| {
-                    if presets.is_empty() {
-                        ui.label(
-                            RichText::new("No saved presets")
-                                .size(TYPE.caption)
-                                .color(palette.text_faint),
-                        );
-                    }
-
-                    // Each row owns its whole width so the hover highlight spans
-                    // the menu and the name sits hard against the left edge.
-                    let row_height = 26.0;
-                    let icon_box = 24.0;
-                    let icon_gap = 4.0;
-                    let icon_margin = 2.0;
-                    let icons_width = icon_box * 2.0 + icon_gap + icon_margin;
-                    let row_width = ui.available_width();
-                    ui.spacing_mut().item_spacing.y = 2.0;
-
-                    for (index, preset) in presets.iter().enumerate() {
-                        let (row_rect, _) = ui
-                            .allocate_exact_size(Vec2::new(row_width, row_height), Sense::hover());
-
-                        if ui.rect_contains_pointer(row_rect) {
-                            ui.painter().rect_filled(
-                                row_rect,
-                                CornerRadius::same(RADIUS.sm),
-                                palette.surface_strong,
-                            );
-                        }
-
-                        // Painted rather than added as a widget: `add_sized` centres
-                        // its child, and the label has to start at the left edge.
-                        let name_rect = row_rect.with_max_x(row_rect.right() - icons_width);
-                        let mut job = LayoutJob::simple_singleline(
-                            preset.name.clone(),
-                            FontId::proportional(TYPE.body),
-                            palette.text,
-                        );
-                        job.wrap.max_width = (name_rect.width() - 16.0).max(1.0);
-                        job.wrap.max_rows = 1;
-                        job.wrap.break_anywhere = true;
-                        let galley = ui.painter().layout_job(job);
-                        ui.painter().galley(
-                            pos2(
-                                name_rect.left() + 8.0,
-                                name_rect.center().y - galley.size().y / 2.0,
-                            ),
-                            galley.clone(),
-                            palette.text,
-                        );
-
-                        let mut name = ui
-                            .interact(
-                                name_rect,
-                                ui.id().with(("preset_name", index)),
-                                Sense::click(),
-                            )
-                            .on_hover_cursor(CursorIcon::PointingHand);
-                        name.widget_info(|| {
-                            WidgetInfo::labeled(WidgetType::Button, true, &preset.name)
-                        });
-                        if galley.elided {
-                            name = name.on_hover_text(&preset.name);
-                        }
-                        if name.clicked() {
-                            load = Some(index);
-                            ui.close();
-                        }
-
-                        let trash_rect = Rect::from_center_size(
-                            pos2(
-                                row_rect.right() - icon_margin - icon_box / 2.0,
-                                row_rect.center().y,
-                            ),
-                            Vec2::splat(icon_box),
-                        );
-                        let pencil_rect =
-                            trash_rect.translate(Vec2::new(-(icon_box + icon_gap), 0.0));
-
-                        if icons::menu_button(
-                            ui,
-                            pencil_rect,
-                            Icon::Pencil,
-                            palette.text_secondary,
-                            palette.surface_muted,
-                            "Rename preset",
-                        )
-                        .clicked()
-                        {
-                            rename = Some(index);
-                            ui.close();
-                        }
-                        if icons::menu_button(
-                            ui,
-                            trash_rect,
-                            Icon::Trash,
-                            palette.danger,
-                            palette.danger_soft,
-                            "Delete preset",
-                        )
-                        .clicked()
-                        {
-                            delete = Some(index);
-                            ui.close();
-                        }
-                    }
-                });
+            if let Some(chosen) = preset_picker(ui, palette, &active_label, &presets) {
+                action = Some(chosen);
+            }
 
             if secondary_button(ui, "Save Preset…", palette).clicked() {
-                save_new = true;
+                action = Some(PresetAction::SaveNew);
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1408,39 +1300,41 @@ impl TranslationAmigoApp {
             });
         });
 
-        if let Some(index) = load {
-            self.apply_preset(index);
+        match action {
+            Some(PresetAction::Load(index)) => self.apply_preset(index),
+            Some(PresetAction::Delete(index)) => {
+                let body = match self.prefs.presets.get(index) {
+                    Some(preset) => format!(
+                        "Delete \"{}\" and the {} provider{} it holds? The current providers stay as they are.",
+                        preset.name,
+                        preset.providers.len(),
+                        if preset.providers.len() == 1 { "" } else { "s" }
+                    ),
+                    None => "Delete this preset?".to_string(),
+                };
+                self.open_confirm(PendingDelete::Preset(index), "Delete preset", body);
+            }
+            Some(PresetAction::Rename(index)) => {
+                let name = self
+                    .prefs
+                    .presets
+                    .get(index)
+                    .map(|preset| preset.name.clone())
+                    .unwrap_or_default();
+                self.preset_dialog = Some(PresetDialog {
+                    target: Some(index),
+                    name,
+                });
+            }
+            Some(PresetAction::SaveNew) => {
+                self.preset_dialog = Some(PresetDialog {
+                    target: None,
+                    name: String::new(),
+                });
+            }
+            None => {}
         }
-        if let Some(index) = delete {
-            let body = match self.prefs.presets.get(index) {
-                Some(preset) => format!(
-                    "Delete \"{}\" and the {} provider{} it holds? The current providers stay as they are.",
-                    preset.name,
-                    preset.providers.len(),
-                    if preset.providers.len() == 1 { "" } else { "s" }
-                ),
-                None => "Delete this preset?".to_string(),
-            };
-            self.open_confirm(PendingDelete::Preset(index), "Delete preset", body);
-        }
-        if let Some(index) = rename {
-            let name = self
-                .prefs
-                .presets
-                .get(index)
-                .map(|preset| preset.name.clone())
-                .unwrap_or_default();
-            self.preset_dialog = Some(PresetDialog {
-                target: Some(index),
-                name,
-            });
-        }
-        if save_new {
-            self.preset_dialog = Some(PresetDialog {
-                target: None,
-                name: String::new(),
-            });
-        }
+
         if open_settings {
             self.open_settings();
         }
@@ -3565,6 +3459,194 @@ fn with_separators(value: usize) -> String {
     }
 
     out
+}
+
+/// The preset picker: a button the same height as the controls beside it with a
+/// menu of saved presets underneath.
+///
+/// `ComboBox` cannot be used here: it sizes its button from `interact_size`,
+/// which is shorter than every other control, and it centres the selected text.
+fn preset_picker(
+    ui: &mut Ui,
+    palette: &Palette,
+    active_label: &str,
+    presets: &[Preset],
+) -> Option<PresetAction> {
+    const WIDTH: f32 = 320.0;
+    const CARET_ROOM: f32 = 24.0;
+    const PAD: f32 = 12.0;
+
+    let popup_id = Id::new("preset_picker_menu");
+    let was_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+
+    let button = ui.add(
+        Button::new(" ")
+            .frame(true)
+            .min_size(Vec2::new(WIDTH, BUTTON_HEIGHT)),
+    );
+    button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, active_label));
+
+    // The face is painted rather than laid out: `Button` centres its contents and
+    // the selected name belongs at the left edge.
+    let text_color = if button.hovered() || was_open {
+        palette.text
+    } else {
+        palette.text_secondary
+    };
+    let mut job = LayoutJob::simple_singleline(
+        active_label.to_owned(),
+        FontId::proportional(TYPE.small),
+        text_color,
+    );
+    job.wrap.max_width = (button.rect.width() - CARET_ROOM - 2.0 * PAD).max(1.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        pos2(
+            button.rect.left() + PAD,
+            button.rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        text_color,
+    );
+    // A caret, drawn rather than set as a glyph so it never depends on font coverage.
+    // It stays visible while the menu is closed, so the control reads as a menu.
+    let caret = pos2(button.rect.right() - PAD - 2.0, button.rect.center().y);
+    let stroke = Stroke::new(1.5_f32, palette.text_muted);
+    ui.painter().line_segment(
+        [caret + Vec2::new(-4.0, -2.0), caret + Vec2::new(0.0, 2.0)],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [caret + Vec2::new(0.0, 2.0), caret + Vec2::new(4.0, -2.0)],
+        stroke,
+    );
+
+    let mut action = None;
+    egui::Popup::menu(&button).id(popup_id).gap(4.0).show(|ui| {
+        let margin = ui.spacing().menu_margin;
+        ui.set_width(WIDTH - f32::from(margin.left) - f32::from(margin.right));
+        ui.spacing_mut().item_spacing.y = 2.0;
+
+        if presets.is_empty() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("No saved presets")
+                    .size(TYPE.caption)
+                    .color(palette.text_faint),
+            );
+            ui.add_space(4.0);
+        }
+
+        ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for (index, preset) in presets.iter().enumerate() {
+                if let Some(chosen) = preset_menu_row(ui, palette, preset, index) {
+                    action = Some(chosen);
+                    ui.close();
+                }
+            }
+        });
+    });
+
+    action
+}
+
+/// One row of the preset menu: a full-width hit area with its own hover
+/// highlight, the name against the left edge, and its actions at the right.
+fn preset_menu_row(
+    ui: &mut Ui,
+    palette: &Palette,
+    preset: &Preset,
+    index: usize,
+) -> Option<PresetAction> {
+    const ROW_HEIGHT: f32 = 28.0;
+    const SIDE_PAD: f32 = 8.0;
+    const ACTION_SIZE: f32 = 24.0;
+    const ACTION_GAP: f32 = 2.0;
+
+    let mut action = None;
+    let row_width = ui.available_width();
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(row_width, ROW_HEIGHT), Sense::hover());
+
+    if ui.rect_contains_pointer(row_rect) {
+        ui.painter().rect_filled(
+            row_rect,
+            CornerRadius::same(RADIUS.sm),
+            palette.surface_strong,
+        );
+    }
+
+    let actions_width = ACTION_SIZE * 2.0 + ACTION_GAP;
+    let name_rect = row_rect.with_max_x(row_rect.right() - actions_width - SIDE_PAD);
+    let mut job = LayoutJob::simple_singleline(
+        preset.name.clone(),
+        FontId::proportional(TYPE.body),
+        palette.text,
+    );
+    job.wrap.max_width = (name_rect.width() - 2.0 * SIDE_PAD).max(1.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        pos2(
+            name_rect.left() + SIDE_PAD,
+            name_rect.center().y - galley.size().y / 2.0,
+        ),
+        galley.clone(),
+        palette.text,
+    );
+
+    let mut name = ui
+        .interact(
+            name_rect,
+            ui.id().with(("preset_name", index)),
+            Sense::click(),
+        )
+        .on_hover_cursor(CursorIcon::PointingHand);
+    name.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &preset.name));
+    if galley.elided {
+        name = name.on_hover_text(&preset.name);
+    }
+    if name.clicked() {
+        action = Some(PresetAction::Load(index));
+    }
+
+    let trash_rect = Rect::from_center_size(
+        pos2(
+            row_rect.right() - SIDE_PAD / 2.0 - ACTION_SIZE / 2.0,
+            row_rect.center().y,
+        ),
+        Vec2::splat(ACTION_SIZE),
+    );
+    let pencil_rect = trash_rect.translate(Vec2::new(-(ACTION_SIZE + ACTION_GAP), 0.0));
+
+    if icons::menu_button(
+        ui,
+        pencil_rect,
+        Icon::Pencil,
+        palette.text_secondary,
+        palette.surface_muted,
+        "Rename preset",
+    )
+    .clicked()
+    {
+        action = Some(PresetAction::Rename(index));
+    }
+    if icons::menu_button(
+        ui,
+        trash_rect,
+        Icon::Trash,
+        palette.danger,
+        palette.danger_soft,
+        "Delete preset",
+    )
+    .clicked()
+    {
+        action = Some(PresetAction::Delete(index));
+    }
+
+    action
 }
 
 #[cfg(test)]
