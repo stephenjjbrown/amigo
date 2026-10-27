@@ -1439,17 +1439,6 @@ impl TranslationAmigoApp {
                                     .size(TYPE.small)
                                     .color(palette.danger),
                             );
-                        } else if width >= 260.0 {
-                            let hint = if cfg!(target_os = "macos") {
-                                "Cmd+Enter to translate"
-                            } else {
-                                "Ctrl+Enter to translate"
-                            };
-                            ui.label(
-                                RichText::new(hint)
-                                    .size(TYPE.small)
-                                    .color(palette.text_faint),
-                            );
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(8.0);
@@ -1671,6 +1660,19 @@ impl TranslationAmigoApp {
                     };
                     if primary_button(ui, label, can_translate, palette).clicked() {
                         translate_requested = true;
+                    }
+                    if !translating {
+                        // The hint belongs beside the action it triggers; the
+                        // right-to-left layout puts it to the left of the button.
+                        ui.label(
+                            RichText::new(if cfg!(target_os = "macos") {
+                                "Cmd+Enter"
+                            } else {
+                                "Ctrl+Enter"
+                            })
+                            .size(TYPE.small)
+                            .color(palette.text_faint),
+                        );
                     }
                 }
             });
