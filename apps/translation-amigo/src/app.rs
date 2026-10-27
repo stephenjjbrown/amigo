@@ -10,28 +10,21 @@ use deepl_engine::{Command, Engine, Event, ProviderJob};
 use eframe::egui::{
     self, pos2, text::LayoutJob, Align, Align2, Button, Color32, CornerRadius, CursorIcon, FontId,
     Frame, Id, Label, Layout, Margin, Rect, Response, RichText, ScrollArea, Sense, Stroke,
-    TextEdit, Ui, Vec2, WidgetInfo, WidgetType,
+    StrokeKind, TextEdit, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
 use crate::diff::{self, DiffOp};
 use crate::icons::{self, Icon};
-use crate::theme::{card_frame, inset_frame, panel_frame, semibold, Palette, RADIUS, TYPE};
+use crate::theme::{
+    card_frame, inset_frame, panel_frame, semibold, Palette, CONTROL_HEIGHT, CONTROL_PADDING,
+    RADIUS, TYPE,
+};
 
-const AUTO_TRANSLATE_DELAY: f64 = 0.85;
 const MAX_CONTENT_WIDTH: f32 = 1240.0;
 const STACKED_LAYOUT_THRESHOLD: f32 = 760.0;
 const DEFAULT_VARIANTS: usize = 5;
 const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
 const DEFAULT_MULTI_TOP_P: f32 = 0.95;
-/// Every button is this tall, so primary and secondary actions line up.
-pub(crate) const BUTTON_HEIGHT: f32 = 32.0;
-/// Padding inside a one-line text input.
-const INPUT_MARGIN: Margin = Margin {
-    left: 10,
-    right: 10,
-    top: 8,
-    bottom: 8,
-};
 
 /// Provider dialog size, fixed rather than fitted to its content.
 ///
@@ -189,8 +182,6 @@ struct Preferences {
     #[serde(default)]
     next_slot_id: u64,
     #[serde(default)]
-    auto_translate: bool,
-    #[serde(default)]
     verbose_logging: bool,
     #[serde(default = "default_local_parallel")]
     local_parallel: usize,
@@ -223,7 +214,6 @@ impl Default for Preferences {
             }],
             next_slot_id: 2,
             presets: Vec::new(),
-            auto_translate: false,
             verbose_logging: false,
             local_parallel: default_local_parallel(),
             cloud_parallel: default_cloud_parallel(),
@@ -438,7 +428,6 @@ pub struct TranslationAmigoApp {
     next_request: u64,
     expected_responses: usize,
     received_responses: usize,
-    dirty_since: Option<f64>,
 
     global_error: Option<ApiError>,
     now: f64,
@@ -496,7 +485,6 @@ impl TranslationAmigoApp {
             next_request: 0,
             expected_responses: 0,
             received_responses: 0,
-            dirty_since: None,
             global_error: None,
             now: 0.0,
             focus_source: true,
@@ -609,10 +597,6 @@ impl TranslationAmigoApp {
 
         self.cancel_batch();
         self.invalidate(saved_id);
-
-        if self.prefs.auto_translate && self.has_text() && self.all_configured() {
-            self.dirty_since = Some(self.now);
-        }
     }
 
     /// Swap in a saved provider set, discarding in-flight work and results.
@@ -629,12 +613,7 @@ impl TranslationAmigoApp {
         self.active_preset = name;
         self.cancel_batch();
         self.outcomes.clear();
-        self.dirty_since = None;
         self.global_error = None;
-
-        if self.prefs.auto_translate && self.has_text() && self.all_configured() {
-            self.dirty_since = Some(self.now);
-        }
     }
 
     /// What the preset picker should read: the loaded preset, marked when the
@@ -745,12 +724,6 @@ impl TranslationAmigoApp {
         self.prefs.providers.retain(|slot| slot.id != slot_id);
         self.outcomes.remove(&slot_id);
         self.cancel_batch();
-
-        if self.prefs.providers.is_empty() {
-            self.dirty_since = None;
-        } else if self.prefs.auto_translate && self.has_text() && self.all_configured() {
-            self.dirty_since = Some(self.now);
-        }
     }
 
     fn open_provider_dialog(&mut self, editing: Option<u64>) {
@@ -846,7 +819,6 @@ impl TranslationAmigoApp {
         self.current_request = Some(request_id);
         self.expected_responses = jobs.len();
         self.received_responses = 0;
-        self.dirty_since = None;
         self.global_error = None;
 
         self.engine.send(Command::Translate {
@@ -860,13 +832,8 @@ impl TranslationAmigoApp {
         self.cancel_batch();
         self.source_text.clear();
         self.invalidate_all();
-        self.dirty_since = None;
         self.global_error = None;
         self.focus_source = true;
-    }
-
-    fn on_source_edited(&mut self) {
-        self.dirty_since = Some(self.now);
     }
 
     fn copy_outcome(&mut self, ctx: &egui::Context, slot_id: u64, index: Option<usize>) {
@@ -993,13 +960,6 @@ impl TranslationAmigoApp {
                             self.onboarded = true;
                             self.open_settings();
                         }
-                        if signed_in
-                            && self.prefs.auto_translate
-                            && self.has_text()
-                            && self.all_configured()
-                        {
-                            self.dirty_since = Some(self.now);
-                        }
                     }
                     Err(error) => {
                         self.session = Some(SessionStatus::signed_out());
@@ -1025,11 +985,6 @@ impl TranslationAmigoApp {
                             self.settings_error = None;
                             self.global_error = None;
                             self.focus_source = true;
-
-                            if self.prefs.auto_translate && self.has_text() && self.all_configured()
-                            {
-                                self.dirty_since = Some(self.now);
-                            }
                         }
                         Err(error) => {
                             if error.kind == ErrorKind::Cancelled {
@@ -1061,11 +1016,6 @@ impl TranslationAmigoApp {
                         Ok(status) => {
                             self.ollama_status = Some(status);
                             self.ollama_status_error = None;
-
-                            if self.prefs.auto_translate && self.has_text() && self.all_configured()
-                            {
-                                self.dirty_since = Some(self.now);
-                            }
                         }
                         Err(error) => {
                             self.ollama_status = Some(OllamaStatus::not_running());
@@ -1163,43 +1113,6 @@ impl TranslationAmigoApp {
             } else if !self.all_configured() {
                 self.open_settings();
             }
-        }
-    }
-
-    fn maybe_auto_translate(&mut self, ctx: &egui::Context) {
-        if !self.prefs.auto_translate || self.settings_open || self.provider_dialog.is_some() {
-            return;
-        }
-
-        if self.prefs.providers.is_empty() {
-            return;
-        }
-
-        if !self.has_text() {
-            if !self.any_translating() {
-                self.invalidate_all();
-            }
-            return;
-        }
-
-        if self.current_request.is_some()
-            || self
-                .prefs
-                .providers
-                .iter()
-                .any(|slot| !self.slot_configured(slot))
-        {
-            return;
-        }
-
-        let Some(since) = self.dirty_since else {
-            return;
-        };
-
-        if self.now - since >= AUTO_TRANSLATE_DELAY {
-            self.start_translation();
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }
 
@@ -1381,12 +1294,13 @@ impl TranslationAmigoApp {
                 );
                 ui.add_space(10.0);
 
-                let field = ui.add(
+                let field = ui.add_sized(
+                    Vec2::new(ui.available_width(), CONTROL_HEIGHT),
                     TextEdit::singleline(&mut dialog.name)
                         .hint_text("Preset name")
-                        .desired_width(f32::INFINITY)
+                        .vertical_align(Align::Center)
                         .font(FontId::proportional(TYPE.body))
-                        .margin(INPUT_MARGIN),
+                        .margin(Margin::symmetric(CONTROL_PADDING, 0)),
                 );
                 field.request_focus();
 
@@ -1466,7 +1380,6 @@ impl TranslationAmigoApp {
         let mut source_text = std::mem::take(&mut self.source_text);
         let mut focus_source = self.focus_source;
         self.focus_source = false;
-        let mut edited = false;
         let mut clear_requested = false;
 
         panel_frame(palette).show(ui, |ui| {
@@ -1508,9 +1421,6 @@ impl TranslationAmigoApp {
                                 if focus_source {
                                     response.request_focus();
                                     focus_source = false;
-                                }
-                                if response.changed() {
-                                    edited = true;
                                 }
                             });
                     },
@@ -1555,9 +1465,6 @@ impl TranslationAmigoApp {
         self.source_text = source_text;
         self.focus_source = focus_source;
 
-        if edited {
-            self.on_source_edited();
-        }
         if clear_requested {
             self.clear_all();
         }
@@ -1593,7 +1500,7 @@ impl TranslationAmigoApp {
             ui.spacing_mut().item_spacing = Vec2::new(0.0, 8.0);
 
             ui.allocate_ui_with_layout(
-                Vec2::new(width, BUTTON_HEIGHT + 4.0),
+                Vec2::new(width, CONTROL_HEIGHT + 4.0),
                 Layout::left_to_right(Align::Center),
                 |ui| {
                     ui.label(
@@ -1744,8 +1651,6 @@ impl TranslationAmigoApp {
     }
 
     fn ui_action_bar(&mut self, ui: &mut Ui, palette: &Palette) {
-        let mut auto = self.prefs.auto_translate;
-        let mut auto_changed = false;
         let mut translate_requested = false;
         let mut setup_requested = false;
         let has_provider = !self.prefs.providers.is_empty();
@@ -1754,18 +1659,6 @@ impl TranslationAmigoApp {
         let translating = self.any_translating();
 
         ui.horizontal(|ui| {
-            if ui
-                .checkbox(
-                    &mut auto,
-                    RichText::new("Auto-translate")
-                        .size(TYPE.body)
-                        .color(palette.text_secondary),
-                )
-                .changed()
-            {
-                auto_changed = true;
-            }
-
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if !has_provider {
                     if primary_button(ui, "Add a provider", true, palette).clicked() {
@@ -1788,12 +1681,6 @@ impl TranslationAmigoApp {
             });
         });
 
-        if auto_changed {
-            self.prefs.auto_translate = auto;
-            if auto && self.has_text() && self.all_configured() {
-                self.dirty_since = Some(self.now);
-            }
-        }
         if setup_requested {
             self.open_provider_dialog(None);
         }
@@ -2377,13 +2264,14 @@ impl TranslationAmigoApp {
 
                     ui.add_space(14.0);
                     form_label(ui, "CONTEXT HINT", &palette);
-                    ui.add(
+                    ui.add_sized(
+                        Vec2::new(ui.available_width(), CONTROL_HEIGHT),
                         TextEdit::singleline(&mut dialog.draft.context)
                             .char_limit(300)
-                            .desired_width(f32::INFINITY)
                             .hint_text("A chill conversation between close friends in Lisbon.")
+                            .vertical_align(Align::Center)
                             .font(FontId::proportional(TYPE.body))
-                            .margin(INPUT_MARGIN),
+                            .margin(Margin::symmetric(CONTROL_PADDING, 0)),
                     );
                     ui.label(
                         RichText::new("Optional")
@@ -2518,7 +2406,6 @@ impl eframe::App for TranslationAmigoApp {
 
         self.poll_events();
         self.handle_shortcuts(ctx);
-        self.maybe_auto_translate(ctx);
 
         let palette = Palette::for_theme(ctx.style().visuals.dark_mode);
         let horizontal_margin = (ctx.screen_rect().width() * 0.02).clamp(12.0, 28.0) as i8;
@@ -2657,72 +2544,80 @@ fn segmented_control<T: Copy + PartialEq>(
     let count = options.len();
     let count_f = count as f32;
     let available = ui.available_width();
-    let total = (min_width * count_f + (count_f - 1.0) + 2.0).min(available);
-    let segment_width = ((total - 2.0 - (count_f - 1.0)) / count_f).max(min_width);
-    let height = BUTTON_HEIGHT - 2.0;
+    let total = (min_width * count_f + (count_f - 1.0) + 4.0).min(available);
+    let (outer, _) = ui.allocate_exact_size(Vec2::new(total, CONTROL_HEIGHT), Sense::hover());
 
-    Frame::new()
-        .fill(palette.surface_muted)
-        .stroke(Stroke::new(1.0_f32, palette.border))
-        .corner_radius(CornerRadius::same(RADIUS.sm))
-        .inner_margin(Margin::same(1))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = Vec2::ZERO;
-            ui.horizontal(|ui| {
-                for (index, (value, label)) in options.iter().enumerate() {
-                    let (rect, response) =
-                        ui.allocate_exact_size(Vec2::new(segment_width, height), Sense::click());
-                    let is_selected = *selected == *value;
-                    let painter = ui.painter();
+    let painter = ui.painter();
+    painter.rect_filled(outer, CornerRadius::same(RADIUS.sm), palette.surface_muted);
+    painter.rect_stroke(
+        outer,
+        CornerRadius::same(RADIUS.sm),
+        Stroke::new(1.0_f32, palette.border),
+        StrokeKind::Inside,
+    );
 
-                    if is_selected {
-                        painter.rect_filled(
-                            rect,
-                            CornerRadius::same(RADIUS.sm.saturating_sub(1)),
-                            palette.surface_strong,
-                        );
-                    } else if response.hovered() {
-                        painter.rect_filled(
-                            rect,
-                            CornerRadius::same(0),
-                            palette.surface_strong.gamma_multiply(0.5),
-                        );
-                    }
+    // The segments sit inside the border with a 1px gap, so the control's own
+    // height is CONTROL_HEIGHT rather than the segments' height plus padding.
+    let track = outer.shrink(2.0);
+    let segment_width = ((track.width() - (count_f - 1.0)) / count_f).max(1.0);
+    let mut left = track.left();
 
-                    if index > 0 {
-                        painter.line_segment(
-                            [
-                                egui::pos2(rect.left(), rect.top() + 3.0),
-                                egui::pos2(rect.left(), rect.bottom() - 3.0),
-                            ],
-                            Stroke::new(1.0_f32, palette.border),
-                        );
-                    }
+    for (index, (value, label)) in options.iter().enumerate() {
+        let rect = Rect::from_min_size(
+            pos2(left, track.top()),
+            Vec2::new(segment_width, track.height()),
+        );
+        left += segment_width;
+        let response = ui.interact(rect, ui.id().with(("segment", index)), Sense::click());
+        let is_selected = *selected == *value;
+        let painter = ui.painter();
 
-                    let font = if is_selected {
-                        semibold(TYPE.small)
-                    } else {
-                        FontId::proportional(TYPE.small)
-                    };
-                    painter.text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        *label,
-                        font,
-                        if is_selected {
-                            palette.text
-                        } else {
-                            palette.text_muted
-                        },
-                    );
+        if is_selected {
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(RADIUS.sm.saturating_sub(1)),
+                palette.surface_strong,
+            );
+        } else if response.hovered() {
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(0),
+                palette.surface_strong.gamma_multiply(0.5),
+            );
+        }
 
-                    if response.clicked() && !is_selected {
-                        *selected = *value;
-                        changed = true;
-                    }
-                }
-            });
-        });
+        if index > 0 {
+            painter.line_segment(
+                [
+                    pos2(rect.left(), rect.top() + 3.0),
+                    pos2(rect.left(), rect.bottom() - 3.0),
+                ],
+                Stroke::new(1.0_f32, palette.border),
+            );
+        }
+
+        let font = if is_selected {
+            semibold(TYPE.small)
+        } else {
+            FontId::proportional(TYPE.small)
+        };
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            *label,
+            font,
+            if is_selected {
+                palette.text
+            } else {
+                palette.text_muted
+            },
+        );
+
+        if response.clicked() && !is_selected {
+            *selected = *value;
+            changed = true;
+        }
+    }
 
     changed
 }
@@ -2894,7 +2789,7 @@ fn result_section(
             if icons::button(
                 ui,
                 Icon::Trash,
-                BUTTON_HEIGHT,
+                CONTROL_HEIGHT,
                 palette.danger,
                 "Remove provider",
             )
@@ -2905,7 +2800,7 @@ fn result_section(
             if icons::button(
                 ui,
                 Icon::Sliders,
-                BUTTON_HEIGHT,
+                CONTROL_HEIGHT,
                 palette.text_secondary,
                 "Configure provider",
             )
@@ -2919,7 +2814,8 @@ fn result_section(
                 } else {
                     (Icon::Copy, "Copy translation")
                 };
-                if icons::button(ui, icon, BUTTON_HEIGHT, palette.text_secondary, tooltip).clicked()
+                if icons::button(ui, icon, CONTROL_HEIGHT, palette.text_secondary, tooltip)
+                    .clicked()
                 {
                     *copy_requested = Some((slot.id, None));
                 }
@@ -3132,7 +3028,8 @@ fn render_plain(
                 } else {
                     (Icon::Copy, "Copy translation")
                 };
-                if icons::button(ui, icon, BUTTON_HEIGHT, palette.text_secondary, tooltip).clicked()
+                if icons::button(ui, icon, CONTROL_HEIGHT, palette.text_secondary, tooltip)
+                    .clicked()
                 {
                     *copy_requested = Some((slot_id, Some(index)));
                 }
@@ -3214,7 +3111,7 @@ fn variant_row(
             } else {
                 (Icon::Copy, "Copy translation")
             };
-            if icons::button(ui, icon, BUTTON_HEIGHT, palette.text_secondary, tooltip).clicked() {
+            if icons::button(ui, icon, CONTROL_HEIGHT, palette.text_secondary, tooltip).clicked() {
                 *copy_requested = Some((slot_id, Some(group.first_index)));
             }
         });
@@ -3318,7 +3215,7 @@ fn secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Response {
                 .color(palette.text_secondary),
         )
         .frame(true)
-        .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
+        .min_size(Vec2::new(0.0, CONTROL_HEIGHT)),
     )
 }
 
@@ -3326,7 +3223,7 @@ fn danger_secondary_button(ui: &mut Ui, label: &str, palette: &Palette) -> Respo
     ui.add(
         Button::new(RichText::new(label).size(TYPE.small).color(palette.danger))
             .frame(true)
-            .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
+            .min_size(Vec2::new(0.0, CONTROL_HEIGHT)),
     )
 }
 
@@ -3359,18 +3256,19 @@ fn primary_button(ui: &mut Ui, label: &str, enabled: bool, palette: &Palette) ->
         .fill(fill)
         .stroke(stroke)
         .corner_radius(CornerRadius::same(RADIUS.sm))
-        .min_size(Vec2::new(120.0, BUTTON_HEIGHT)),
+        .min_size(Vec2::new(120.0, CONTROL_HEIGHT)),
     )
 }
 
 fn swap_button(ui: &mut Ui, palette: &Palette) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(34.0, 34.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(CONTROL_HEIGHT), Sense::click());
+    let radius = CONTROL_HEIGHT / 2.0;
     let hovered = response.hovered();
     let painter = ui.painter();
 
     painter.circle_filled(
         rect.center(),
-        17.0,
+        radius,
         if hovered {
             palette.surface_strong
         } else {
@@ -3379,7 +3277,7 @@ fn swap_button(ui: &mut Ui, palette: &Palette) -> Response {
     );
     painter.circle_stroke(
         rect.center(),
-        17.0,
+        radius,
         Stroke::new(
             1.0_f32,
             if hovered {
@@ -3482,7 +3380,7 @@ fn preset_picker(
     let button = ui.add(
         Button::new(" ")
             .frame(true)
-            .min_size(Vec2::new(WIDTH, BUTTON_HEIGHT)),
+            .min_size(Vec2::new(WIDTH, CONTROL_HEIGHT)),
     );
     button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, active_label));
 
@@ -3659,7 +3557,6 @@ mod tests {
             providers: Vec::new(),
             presets: Vec::new(),
             next_slot_id: 0,
-            auto_translate: false,
             verbose_logging: false,
             local_parallel: default_local_parallel(),
             cloud_parallel: default_cloud_parallel(),

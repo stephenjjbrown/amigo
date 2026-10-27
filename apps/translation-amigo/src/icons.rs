@@ -9,8 +9,7 @@ use eframe::egui::{
     self, Button, Color32, Image, Rect, Response, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
-use crate::app::BUTTON_HEIGHT;
-use crate::theme::{Palette, TYPE};
+use crate::theme::{Palette, CONTROL_HEIGHT, TYPE};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
@@ -95,7 +94,7 @@ pub fn labeled_button(ui: &mut Ui, icon: Icon, label: &str, palette: &Palette) -
                 .color(palette.text_secondary),
         )
         .frame(true)
-        .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
+        .min_size(Vec2::new(0.0, CONTROL_HEIGHT)),
     )
 }
 

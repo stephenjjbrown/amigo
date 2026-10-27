@@ -55,6 +55,15 @@ pub const TYPE: TypeScale = TypeScale {
     display: 20.0,
 };
 
+/// Height of every interactive control: buttons, text inputs, pickers,
+/// segmented controls. Text inside is centred, so a single height is what keeps
+/// a row of mixed controls on one baseline.
+pub const CONTROL_HEIGHT: f32 = 32.0;
+
+/// Horizontal inset inside a control. Buttons use it through `button_padding`;
+/// inputs pass it as their text margin so labels line up across the two.
+pub const CONTROL_PADDING: i8 = 12;
+
 const SEMIBOLD: &str = "semibold";
 
 /// Semibold face of the interface font, for titles and emphasis.
@@ -239,8 +248,11 @@ pub fn apply(ctx: &egui::Context) {
             style.text_styles = text_styles();
             style.interaction.selectable_labels = false;
             style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-            style.spacing.button_padding = egui::vec2(12.0, 6.0);
+            style.spacing.button_padding = egui::vec2(f32::from(CONTROL_PADDING), 6.0);
             style.spacing.menu_margin = Margin::same(6);
+            // Widgets that take their height from here (combo boxes, sliders,
+            // check boxes, drag values) must match the buttons beside them.
+            style.spacing.interact_size.y = CONTROL_HEIGHT;
         });
     }
 }

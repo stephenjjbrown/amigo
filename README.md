@@ -26,7 +26,6 @@ server.
   - English → Spanish
   - Spanish → English
 - Swapping direction per provider, with PT→EN swapping to EN→PT-PT
-- Opt-in auto-translate with an 850 ms debounce
 - Copy, clear, character count, stale-result indicator, error banners
 - `Cmd+Enter` to translate, `Cmd+,` for settings, `Esc` to close
 - DeepL tokens stored in a local 0600 session file for the prototype; Ollama needs no credentials
