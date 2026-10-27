@@ -2733,7 +2733,7 @@ fn result_card(ui: &mut Ui, palette: &Palette, add_contents: impl FnOnce(&mut Ui
 
 fn slot_title(slot: &ProviderSlot) -> String {
     format!(
-        "{} · {} -> {}",
+        "{} · {} → {}",
         slot.kind.label(),
         slot.pair.source.code(),
         slot.pair.target.code()
@@ -3303,7 +3303,10 @@ fn swap_button(ui: &mut Ui, palette: &Palette) -> Response {
         color,
     );
 
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Swap languages"));
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Swap languages")
 }
 
 fn with_separators(value: usize) -> String {
