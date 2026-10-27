@@ -102,6 +102,23 @@ impl Default for ProviderSlot {
 }
 
 impl ProviderSlot {
+    /// Whether two slots describe the same provider configuration. The `id` is
+    /// runtime identity — loading a preset re-keys it — so it is not part of the
+    /// comparison.
+    fn same_configuration(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.pair == other.pair
+            && self.model == other.model
+            && self.mode == other.mode
+            && self.diff_view == other.diff_view
+            && self.hide_deletions == other.hide_deletions
+            && self.register == other.register
+            && self.context == other.context
+            && self.variants == other.variants
+            && self.temperature == other.temperature
+            && self.top_p == other.top_p
+    }
+
     fn context(&self) -> Option<&str> {
         let context = self.context.trim();
         (!context.is_empty()).then_some(context)
@@ -125,10 +142,40 @@ impl ProviderSlot {
     }
 }
 
+#[derive(Clone)]
+enum PendingDelete {
+    Preset(usize),
+    Provider(u64),
+}
+
+#[derive(Clone)]
+struct ConfirmDialog {
+    action: PendingDelete,
+    title: String,
+    body: String,
+}
+
+#[derive(Clone)]
+struct PresetDialog {
+    /// `None` when saving a new preset, `Some(index)` when renaming.
+    target: Option<usize>,
+    name: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct Preset {
+    name: String,
+    #[serde(default)]
+    providers: Vec<ProviderSlot>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Preferences {
     #[serde(default)]
     providers: Vec<ProviderSlot>,
+    /// Saved provider sets the user can switch between.
+    #[serde(default)]
+    presets: Vec<Preset>,
     #[serde(default)]
     next_slot_id: u64,
     #[serde(default)]
@@ -165,6 +212,7 @@ impl Default for Preferences {
                 ..ProviderSlot::default()
             }],
             next_slot_id: 2,
+            presets: Vec::new(),
             auto_translate: false,
             verbose_logging: false,
             local_parallel: default_local_parallel(),
@@ -219,6 +267,83 @@ impl Preferences {
         self.next_slot_id = id + 1;
         id
     }
+
+    /// Snapshot the current providers under `name`, replacing any preset that
+    /// already has that name.
+    fn save_preset(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() || self.providers.is_empty() {
+            return;
+        }
+
+        let providers = self.providers.clone();
+        match self.presets.iter_mut().find(|preset| preset.name == name) {
+            Some(preset) => preset.providers = providers,
+            None => self.presets.push(Preset {
+                name: name.to_string(),
+                providers,
+            }),
+        }
+    }
+
+    /// Replace the current providers with a preset's, re-keying their ids so they
+    /// cannot collide with outcomes or with each other.
+    fn apply_preset(&mut self, index: usize) -> bool {
+        let Some(preset) = self.presets.get(index) else {
+            return false;
+        };
+        let providers = preset.providers.clone();
+        if providers.is_empty() {
+            return false;
+        }
+
+        self.providers = providers
+            .into_iter()
+            .enumerate()
+            .map(|(offset, mut slot)| {
+                slot.id = offset as u64 + 1;
+                slot
+            })
+            .collect();
+        self.next_slot_id = self.providers.len() as u64 + 1;
+        true
+    }
+
+    fn delete_preset(&mut self, index: usize) {
+        if index < self.presets.len() {
+            self.presets.remove(index);
+        }
+    }
+
+    /// Rename a preset. Fails on a blank name or one another preset already uses.
+    fn rename_preset(&mut self, index: usize, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let taken = self
+            .presets
+            .iter()
+            .enumerate()
+            .any(|(other, preset)| other != index && preset.name == name);
+        if taken {
+            return false;
+        }
+
+        let Some(preset) = self.presets.get_mut(index) else {
+            return false;
+        };
+        preset.name = name.to_string();
+        true
+    }
+}
+
+fn same_providers(left: &[ProviderSlot], right: &[ProviderSlot]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.same_configuration(right))
 }
 
 fn default_variants() -> usize {
@@ -290,6 +415,11 @@ pub struct TranslationAmigoApp {
 
     settings_open: bool,
     settings_position: Option<egui::Pos2>,
+    preset_dialog: Option<PresetDialog>,
+    /// Name of the preset the current providers came from, for showing what is
+    /// loaded and whether it has drifted.
+    active_preset: Option<String>,
+    confirm_delete: Option<ConfirmDialog>,
     signing_in: bool,
     settings_error: Option<String>,
     diagnostics_copied_at: Option<f64>,
@@ -326,6 +456,13 @@ impl TranslationAmigoApp {
 
         crate::logging::set_verbose(prefs.verbose_logging);
 
+        // Start out on whichever preset matches the restored providers, if any.
+        let prefs_active = prefs
+            .presets
+            .iter()
+            .find(|preset| same_providers(&preset.providers, &prefs.providers))
+            .map(|preset| preset.name.clone());
+
         Self {
             engine,
             prefs,
@@ -338,6 +475,9 @@ impl TranslationAmigoApp {
             ollama_status_error: None,
             settings_open: false,
             settings_position: None,
+            preset_dialog: None,
+            active_preset: prefs_active,
+            confirm_delete: None,
             signing_in: false,
             settings_error: None,
             diagnostics_copied_at: None,
@@ -461,6 +601,132 @@ impl TranslationAmigoApp {
 
         if self.prefs.auto_translate && self.has_text() && self.all_configured() {
             self.dirty_since = Some(self.now);
+        }
+    }
+
+    /// Swap in a saved provider set, discarding in-flight work and results.
+    fn apply_preset(&mut self, index: usize) {
+        let name = self
+            .prefs
+            .presets
+            .get(index)
+            .map(|preset| preset.name.clone());
+        if !self.prefs.apply_preset(index) {
+            return;
+        }
+
+        self.active_preset = name;
+        self.cancel_batch();
+        self.outcomes.clear();
+        self.dirty_since = None;
+        self.global_error = None;
+
+        if self.prefs.auto_translate && self.has_text() && self.all_configured() {
+            self.dirty_since = Some(self.now);
+        }
+    }
+
+    /// What the preset picker should read: the loaded preset, marked when the
+    /// providers have drifted from it, or a placeholder when none is loaded.
+    fn active_preset_label(&self) -> String {
+        let Some(name) = &self.active_preset else {
+            return "Select Preset…".to_string();
+        };
+
+        match self
+            .prefs
+            .presets
+            .iter()
+            .find(|preset| &preset.name == name)
+        {
+            Some(preset) if same_providers(&preset.providers, &self.prefs.providers) => {
+                name.clone()
+            }
+            Some(_) => format!("{name} (Modified)"),
+            None => "Select Preset…".to_string(),
+        }
+    }
+
+    fn open_confirm(&mut self, action: PendingDelete, title: &str, body: String) {
+        self.confirm_delete = Some(ConfirmDialog {
+            action,
+            title: title.to_string(),
+            body,
+        });
+    }
+
+    /// Confirmation for the two destructive actions: removing a provider and
+    /// deleting a preset.
+    fn ui_confirm_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let Some(dialog) = self.confirm_delete.clone() else {
+            return;
+        };
+
+        let mut close = false;
+        let mut confirm = false;
+
+        let response = egui::Modal::new(Id::new("confirm_delete_dialog"))
+            .frame(
+                Frame::new()
+                    .fill(palette.surface)
+                    .stroke(Stroke::new(1.0_f32, palette.border_strong))
+                    .corner_radius(CornerRadius::same(RADIUS.lg))
+                    .inner_margin(Margin::same(18)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+
+                ui.label(
+                    RichText::new(&dialog.title)
+                        .font(semibold(TYPE.title))
+                        .color(palette.text),
+                );
+                ui.add_space(8.0);
+                ui.add(
+                    Label::new(
+                        RichText::new(&dialog.body)
+                            .size(TYPE.body)
+                            .color(palette.text_secondary),
+                    )
+                    .wrap(),
+                );
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if danger_secondary_button(ui, "Delete", palette).clicked() {
+                        confirm = true;
+                    }
+                    if secondary_button(ui, "Cancel", palette).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if response.should_close() {
+            close = true;
+        }
+
+        if confirm {
+            match dialog.action {
+                PendingDelete::Preset(index) => {
+                    let name = self
+                        .prefs
+                        .presets
+                        .get(index)
+                        .map(|preset| preset.name.clone());
+                    self.prefs.delete_preset(index);
+                    if self.active_preset == name {
+                        self.active_preset = None;
+                    }
+                }
+                PendingDelete::Provider(slot_id) => self.remove_slot(slot_id),
+            }
+            self.confirm_delete = None;
+            return;
+        }
+
+        if close {
+            self.confirm_delete = None;
         }
     }
 
@@ -952,8 +1218,10 @@ impl TranslationAmigoApp {
     }
 
     fn ui_content(&mut self, ui: &mut Ui, ctx: &egui::Context, palette: &Palette) {
-        self.ui_header(ui, palette);
-        ui.add_space(6.0);
+        self.ui_top_bar(ui, palette);
+        ui.add_space(8.0);
+        hairline(ui, palette);
+        ui.add_space(8.0);
 
         let error_height = if self.global_error.is_some() {
             76.0
@@ -993,25 +1261,85 @@ impl TranslationAmigoApp {
         self.ui_action_bar(ui, palette);
     }
 
-    fn ui_header(&mut self, ui: &mut Ui, palette: &Palette) {
+    fn ui_top_bar(&mut self, ui: &mut Ui, palette: &Palette) {
         let mut open_settings = false;
+        let mut load = None;
+        let mut delete = None;
+        let mut rename = None;
+        let mut save_new = false;
+        let presets = self.prefs.presets.clone();
+        let active_label = self.active_preset_label();
 
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new("Translation Amigo")
-                    .font(semibold(TYPE.heading))
-                    .color(palette.text_secondary),
+                RichText::new("PRESET")
+                    .font(semibold(TYPE.micro))
+                    .color(palette.text_muted),
             );
 
-            let enabled = self.prefs.providers.len();
-            if enabled > 0 {
-                badge(
-                    ui,
-                    &format!("{enabled} provider{}", if enabled == 1 { "" } else { "s" }),
-                    palette.text_muted,
-                    palette.surface_muted,
-                    palette.border,
-                );
+            egui::ComboBox::from_id_salt("preset_picker")
+                .selected_text(
+                    RichText::new(active_label)
+                        .size(TYPE.small)
+                        .color(palette.text_secondary),
+                )
+                .width(320.0)
+                .height(BUTTON_HEIGHT)
+                .show_ui(ui, |ui| {
+                    if presets.is_empty() {
+                        ui.label(
+                            RichText::new("No saved presets")
+                                .size(TYPE.caption)
+                                .color(palette.text_faint),
+                        );
+                    }
+
+                    for (index, preset) in presets.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let name = ui.add_sized(
+                                Vec2::new(200.0, 24.0),
+                                Label::new(
+                                    RichText::new(&preset.name)
+                                        .size(TYPE.body)
+                                        .color(palette.text),
+                                )
+                                .truncate()
+                                .sense(Sense::click()),
+                            );
+                            name.clone().on_hover_text(&preset.name);
+                            if name.clicked() {
+                                load = Some(index);
+                                ui.close();
+                            }
+
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                if icon_button(ui, "×", palette.danger, palette.danger_soft)
+                                    .on_hover_text("Delete preset")
+                                    .clicked()
+                                {
+                                    delete = Some(index);
+                                    ui.close();
+                                }
+                                if icon_button(
+                                    ui,
+                                    "✎",
+                                    palette.text_secondary,
+                                    palette.surface_muted,
+                                )
+                                .on_hover_text("Rename preset")
+                                .clicked()
+                                {
+                                    rename = Some(index);
+                                    ui.close();
+                                }
+                            });
+                        });
+                    }
+                });
+
+            if secondary_button(ui, "Save Preset…", palette).clicked() {
+                save_new = true;
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1021,8 +1349,158 @@ impl TranslationAmigoApp {
             });
         });
 
+        if let Some(index) = load {
+            self.apply_preset(index);
+        }
+        if let Some(index) = delete {
+            let body = match self.prefs.presets.get(index) {
+                Some(preset) => format!(
+                    "Delete \"{}\" and the {} provider{} it holds? The current providers stay as they are.",
+                    preset.name,
+                    preset.providers.len(),
+                    if preset.providers.len() == 1 { "" } else { "s" }
+                ),
+                None => "Delete this preset?".to_string(),
+            };
+            self.open_confirm(PendingDelete::Preset(index), "Delete preset", body);
+        }
+        if let Some(index) = rename {
+            let name = self
+                .prefs
+                .presets
+                .get(index)
+                .map(|preset| preset.name.clone())
+                .unwrap_or_default();
+            self.preset_dialog = Some(PresetDialog {
+                target: Some(index),
+                name,
+            });
+        }
+        if save_new {
+            self.preset_dialog = Some(PresetDialog {
+                target: None,
+                name: String::new(),
+            });
+        }
         if open_settings {
             self.open_settings();
+        }
+    }
+
+    /// Small modal for naming a new preset or renaming an existing one.
+    fn ui_preset_dialog(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let Some(mut dialog) = self.preset_dialog.clone() else {
+            return;
+        };
+
+        let renaming = dialog.target.is_some();
+        let name = dialog.name.trim().to_string();
+        let taken = self
+            .prefs
+            .presets
+            .iter()
+            .enumerate()
+            .any(|(index, preset)| Some(index) != dialog.target && preset.name == name);
+        let can_save = !name.is_empty() && !taken && (renaming || !self.prefs.providers.is_empty());
+
+        let mut close = false;
+        let mut save = false;
+
+        let response = egui::Modal::new(Id::new("preset_name_dialog"))
+            .frame(
+                Frame::new()
+                    .fill(palette.surface)
+                    .stroke(Stroke::new(1.0_f32, palette.border_strong))
+                    .corner_radius(CornerRadius::same(RADIUS.lg))
+                    .inner_margin(Margin::same(18)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(340.0);
+
+                ui.label(
+                    RichText::new(if renaming {
+                        "Rename preset"
+                    } else {
+                        "Save preset"
+                    })
+                    .font(semibold(TYPE.title))
+                    .color(palette.text),
+                );
+                ui.add_space(10.0);
+
+                let field = ui.add(
+                    TextEdit::singleline(&mut dialog.name)
+                        .hint_text("Preset name")
+                        .desired_width(f32::INFINITY)
+                        .font(FontId::proportional(TYPE.body))
+                        .margin(INPUT_MARGIN),
+                );
+                field.request_focus();
+
+                if taken {
+                    ui.label(
+                        RichText::new("That name is already in use")
+                            .size(TYPE.caption)
+                            .color(palette.warning),
+                    );
+                }
+
+                if can_save && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    save = true;
+                }
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if primary_button(
+                        ui,
+                        if renaming { "Rename" } else { "Save" },
+                        can_save,
+                        palette,
+                    )
+                    .clicked()
+                    {
+                        save = true;
+                    }
+                    if secondary_button(ui, "Cancel", palette).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if response.should_close() {
+            close = true;
+        }
+
+        if save {
+            let applied = match dialog.target {
+                Some(index) => {
+                    let previous = self
+                        .prefs
+                        .presets
+                        .get(index)
+                        .map(|preset| preset.name.clone());
+                    let renamed = self.prefs.rename_preset(index, &name);
+                    if renamed && self.active_preset == previous {
+                        self.active_preset = Some(name.clone());
+                    }
+                    renamed
+                }
+                None => {
+                    self.prefs.save_preset(&name);
+                    self.active_preset = Some(name.clone());
+                    true
+                }
+            };
+            if applied {
+                self.preset_dialog = None;
+                return;
+            }
+        }
+
+        if close {
+            self.preset_dialog = None;
+        } else {
+            self.preset_dialog = Some(dialog);
         }
     }
 
@@ -1162,7 +1640,7 @@ impl TranslationAmigoApp {
             ui.spacing_mut().item_spacing = Vec2::new(0.0, 8.0);
 
             ui.allocate_ui_with_layout(
-                Vec2::new(width, 22.0),
+                Vec2::new(width, BUTTON_HEIGHT + 4.0),
                 Layout::left_to_right(Align::Center),
                 |ui| {
                     ui.label(
@@ -1171,12 +1649,29 @@ impl TranslationAmigoApp {
                             .strong()
                             .color(palette.text),
                     );
+
+                    let providers = cards.len();
+                    if providers > 0 {
+                        ui.add_space(8.0);
+                        badge(
+                            ui,
+                            &format!(
+                                "{providers} provider{}",
+                                if providers == 1 { "" } else { "s" }
+                            ),
+                            palette.text_secondary,
+                            palette.surface_muted,
+                            palette.border,
+                        );
+                    }
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if secondary_button(ui, "+ Add Translation Provider", palette).clicked() {
+                            add_requested = true;
+                        }
+                    });
                 },
             );
-
-            if add_provider_button(ui, palette) {
-                add_requested = true;
-            }
 
             if cards.is_empty() {
                 result_card(ui, palette, |ui| {
@@ -1221,7 +1716,14 @@ impl TranslationAmigoApp {
             self.open_provider_dialog(Some(slot_id));
         }
         if let Some(slot_id) = delete_requested {
-            self.remove_slot(slot_id);
+            let body = match cards.iter().find(|(slot, _, _)| slot.id == slot_id) {
+                Some((slot, _, _)) => format!(
+                    "Remove the {} provider? Its results will be discarded.",
+                    slot_title(slot)
+                ),
+                None => "Remove this provider?".to_string(),
+            };
+            self.open_confirm(PendingDelete::Provider(slot_id), "Remove provider", body);
         }
         if let Some((slot_id, index)) = copy_requested {
             self.copy_outcome(ctx, slot_id, index);
@@ -2065,6 +2567,8 @@ impl eframe::App for TranslationAmigoApp {
 
         self.ui_settings(ctx);
         self.ui_provider_dialog(ctx);
+        self.ui_preset_dialog(ctx, &palette);
+        self.ui_confirm_dialog(ctx, &palette);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2360,25 +2864,6 @@ fn result_card(ui: &mut Ui, palette: &Palette, add_contents: impl FnOnce(&mut Ui
             ui.set_width((width - 28.0).max(80.0));
             add_contents(ui);
         });
-}
-
-/// Heading button that opens the add-provider dialog.
-fn add_provider_button(ui: &mut Ui, palette: &Palette) -> bool {
-    let width = ui.available_width();
-    let mut clicked = false;
-
-    inset_frame(palette)
-        .inner_margin(Margin::symmetric(12, 7))
-        .show(ui, |ui| {
-            ui.set_width((width - 24.0).max(120.0));
-            ui.horizontal(|ui| {
-                if secondary_button(ui, "+ Add Translation Provider", palette).clicked() {
-                    clicked = true;
-                }
-            });
-        });
-
-    clicked
 }
 
 fn slot_title(slot: &ProviderSlot) -> String {
@@ -2784,6 +3269,16 @@ fn pane_header(
     );
 }
 
+/// A small square action for menu rows: an icon on a tinted background.
+fn icon_button(ui: &mut Ui, glyph: &str, fg: Color32, bg: Color32) -> Response {
+    ui.add(
+        Button::new(RichText::new(glyph).size(TYPE.body).color(fg))
+            .fill(bg)
+            .stroke(Stroke::NONE)
+            .min_size(Vec2::splat(24.0)),
+    )
+}
+
 fn hairline(ui: &mut Ui, palette: &Palette) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
@@ -2990,6 +3485,7 @@ mod tests {
     fn legacy(deepl: bool, ollama: bool) -> Preferences {
         Preferences {
             providers: Vec::new(),
+            presets: Vec::new(),
             next_slot_id: 0,
             auto_translate: false,
             verbose_logging: false,
@@ -3008,6 +3504,103 @@ mod tests {
             legacy_ollama_model: OllamaModel::Gemma4Cloud,
             legacy_register: Register::Formal,
         }
+    }
+
+    #[test]
+    fn presets_snapshot_and_replace_the_provider_list() {
+        let mut prefs = Preferences::default();
+        prefs.providers.push(ProviderSlot {
+            id: 2,
+            kind: Provider::Ollama,
+            mode: TranslationMode::Multi,
+            ..ProviderSlot::default()
+        });
+
+        prefs.save_preset("  Portuguese  ");
+        assert_eq!(prefs.presets.len(), 1);
+        assert_eq!(prefs.presets[0].name, "Portuguese");
+        assert_eq!(prefs.presets[0].providers.len(), 2);
+
+        // Saving the same name overwrites rather than duplicating.
+        prefs.providers.pop();
+        prefs.save_preset("Portuguese");
+        assert_eq!(prefs.presets.len(), 1);
+        assert_eq!(prefs.presets[0].providers.len(), 1);
+
+        // Applying restores the snapshot and re-keys the ids.
+        prefs.providers.clear();
+        assert!(prefs.apply_preset(0));
+        assert_eq!(prefs.providers.len(), 1);
+        assert_eq!(prefs.providers[0].id, 1);
+        assert_eq!(prefs.next_slot_id, 2);
+    }
+
+    #[test]
+    fn empty_presets_are_ignored() {
+        let mut prefs = Preferences::default();
+        prefs.providers.clear();
+
+        prefs.save_preset("nameless");
+        assert!(prefs.presets.is_empty());
+
+        prefs.save_preset("   ");
+        assert!(prefs.presets.is_empty());
+
+        assert!(!prefs.apply_preset(0));
+    }
+
+    #[test]
+    fn presets_can_be_deleted() {
+        let mut prefs = Preferences::default();
+        prefs.save_preset("one");
+        prefs.save_preset("two");
+
+        prefs.delete_preset(0);
+        assert_eq!(prefs.presets.len(), 1);
+        assert_eq!(prefs.presets[0].name, "two");
+
+        prefs.delete_preset(5);
+        assert_eq!(prefs.presets.len(), 1);
+    }
+
+    #[test]
+    fn presets_can_be_renamed() {
+        let mut prefs = Preferences::default();
+        prefs.save_preset("one");
+
+        assert!(prefs.rename_preset(0, "renamed"));
+        assert_eq!(prefs.presets[0].name, "renamed");
+
+        prefs.save_preset("other");
+        assert!(!prefs.rename_preset(0, "other"));
+        assert!(!prefs.rename_preset(0, "   "));
+        assert!(!prefs.rename_preset(9, "missing"));
+        assert_eq!(prefs.presets[0].name, "renamed");
+    }
+
+    #[test]
+    fn drift_ignores_provider_ids() {
+        let mut saved = ProviderSlot {
+            id: 2,
+            kind: Provider::Ollama,
+            model: OllamaModel::TranslateGemma4b,
+            ..ProviderSlot::default()
+        };
+        let loaded = ProviderSlot {
+            id: 1,
+            ..saved.clone()
+        };
+
+        assert!(same_providers(
+            std::slice::from_ref(&saved),
+            std::slice::from_ref(&loaded)
+        ));
+
+        saved.model = OllamaModel::Gemma4Cloud;
+        assert!(!same_providers(
+            std::slice::from_ref(&saved),
+            std::slice::from_ref(&loaded)
+        ));
     }
 
     #[test]
