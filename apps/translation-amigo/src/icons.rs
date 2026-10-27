@@ -66,28 +66,6 @@ pub fn button(ui: &mut Ui, icon: Icon, box_size: f32, tint: Color32, tooltip: &s
     response.on_hover_text(tooltip)
 }
 
-/// Compact icon-only button pinned to an explicit rect, with its own background.
-///
-/// Menu rows lay themselves out by hand so the row can own a full-width hover
-/// highlight; `place` keeps those buttons from moving the row's cursor.
-pub fn menu_button(
-    ui: &mut Ui,
-    rect: Rect,
-    icon: Icon,
-    tint: Color32,
-    background: Color32,
-    tooltip: &str,
-) -> Response {
-    let response = ui.place(
-        rect,
-        Button::image(image(icon, 14.0, tint))
-            .fill(background)
-            .stroke(egui::Stroke::NONE),
-    );
-    accessible(&response, tooltip);
-    response.on_hover_text(tooltip)
-}
-
 /// An inline icon for labels such as the elapsed-time readout.
 pub fn inline(ui: &mut Ui, icon: Icon, size: f32, tint: Color32) -> Response {
     ui.add(image(icon, size, tint))

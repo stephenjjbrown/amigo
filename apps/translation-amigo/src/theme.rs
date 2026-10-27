@@ -249,7 +249,13 @@ pub fn apply(ctx: &egui::Context) {
             style.interaction.selectable_labels = false;
             style.spacing.item_spacing = egui::vec2(8.0, 8.0);
             style.spacing.button_padding = egui::vec2(f32::from(CONTROL_PADDING), 6.0);
-            style.spacing.menu_margin = Margin::same(6);
+            // Menu items run edge to edge, so only the vertical padding is inset.
+            style.spacing.menu_margin = Margin {
+                left: 0,
+                right: 0,
+                top: 4,
+                bottom: 4,
+            };
             // Widgets that take their height from here (combo boxes, sliders,
             // check boxes, drag values) must match the buttons beside them.
             style.spacing.interact_size.y = CONTROL_HEIGHT;

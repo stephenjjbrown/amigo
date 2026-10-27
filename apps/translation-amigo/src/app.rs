@@ -3415,35 +3415,38 @@ fn preset_picker(
     action
 }
 
-/// One row of the preset menu: a full-width hit area with its own hover
-/// highlight, the name against the left edge, and its actions at the right.
+/// How one action cell at the right end of a menu row is painted.
+struct MenuAction {
+    icon: Icon,
+    tint: Color32,
+    fill: Color32,
+    hover_fill: Color32,
+}
+
+/// One row of the preset menu: the name takes the row from edge to edge, and the
+/// actions are full-height cells joined at the right, so the row reads like a
+/// segmented control rather than a label with two floating buttons.
 fn preset_menu_row(
     ui: &mut Ui,
     palette: &Palette,
     preset: &Preset,
     index: usize,
 ) -> Option<PresetAction> {
-    // Menu rows take the control height: the combo boxes' own menu rows are that
-    // tall because of `interact_size`, and the action buttons need the room.
-    const ROW_HEIGHT: f32 = CONTROL_HEIGHT;
     const SIDE_PAD: f32 = 8.0;
-    const ACTION_SIZE: f32 = CONTROL_HEIGHT - 8.0;
-    const ACTION_GAP: f32 = 2.0;
+    const ACTION_WIDTH: f32 = CONTROL_HEIGHT;
 
     let mut action = None;
     let row_width = ui.available_width();
-    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(row_width, ROW_HEIGHT), Sense::hover());
+    let (row_rect, _) =
+        ui.allocate_exact_size(Vec2::new(row_width, CONTROL_HEIGHT), Sense::hover());
 
-    if ui.rect_contains_pointer(row_rect) {
-        ui.painter().rect_filled(
-            row_rect,
-            CornerRadius::same(RADIUS.sm),
-            palette.surface_strong,
-        );
+    let name_rect = row_rect.with_max_x(row_rect.right() - ACTION_WIDTH * 2.0);
+
+    if ui.rect_contains_pointer(name_rect) {
+        ui.painter()
+            .rect_filled(name_rect, CornerRadius::ZERO, palette.surface_strong);
     }
 
-    let actions_width = ACTION_SIZE * 2.0 + ACTION_GAP;
-    let name_rect = row_rect.with_max_x(row_rect.right() - actions_width - SIDE_PAD);
     let mut job = LayoutJob::simple_singleline(
         preset.name.clone(),
         FontId::proportional(TYPE.body),
@@ -3477,33 +3480,40 @@ fn preset_menu_row(
         action = Some(PresetAction::Load(index));
     }
 
-    let trash_rect = Rect::from_center_size(
-        pos2(
-            row_rect.right() - SIDE_PAD / 2.0 - ACTION_SIZE / 2.0,
-            row_rect.center().y,
-        ),
-        Vec2::splat(ACTION_SIZE),
+    let trash_rect = Rect::from_min_max(
+        pos2(row_rect.right() - ACTION_WIDTH, row_rect.top()),
+        row_rect.max,
     );
-    let pencil_rect = trash_rect.translate(Vec2::new(-(ACTION_SIZE + ACTION_GAP), 0.0));
+    let pencil_rect = trash_rect.translate(Vec2::new(-ACTION_WIDTH, 0.0));
 
-    if icons::menu_button(
+    if menu_action(
         ui,
+        ui.id().with(("preset_rename", index)),
         pencil_rect,
-        Icon::Pencil,
-        palette.text_secondary,
-        palette.surface_muted,
+        MenuAction {
+            icon: Icon::Pencil,
+            tint: palette.text_secondary,
+            fill: palette.surface_muted,
+            hover_fill: palette.surface_strong,
+        },
+        palette,
         "Rename preset",
     )
     .clicked()
     {
         action = Some(PresetAction::Rename(index));
     }
-    if icons::menu_button(
+    if menu_action(
         ui,
+        ui.id().with(("preset_delete", index)),
         trash_rect,
-        Icon::Trash,
-        palette.danger,
-        palette.danger_soft,
+        MenuAction {
+            icon: Icon::Trash,
+            tint: palette.danger,
+            fill: palette.danger_soft,
+            hover_fill: palette.danger_border,
+        },
+        palette,
         "Delete preset",
     )
     .clicked()
@@ -3512,6 +3522,47 @@ fn preset_menu_row(
     }
 
     action
+}
+
+/// A full-height action cell at the right end of a menu row. It paints its own
+/// fill and hover state, so a run of cells reads as joined buttons.
+fn menu_action(
+    ui: &mut Ui,
+    id: Id,
+    rect: Rect,
+    action: MenuAction,
+    palette: &Palette,
+    tooltip: &str,
+) -> Response {
+    let response = ui
+        .interact(rect, id, Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand);
+
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        CornerRadius::ZERO,
+        if response.hovered() {
+            action.hover_fill
+        } else {
+            action.fill
+        },
+    );
+    // A hairline on the leading edge separates the cell from the row and from the
+    // cell before it.
+    painter.line_segment(
+        [rect.left_top(), rect.left_bottom()],
+        Stroke::new(1.0_f32, palette.border),
+    );
+    icons::paint_at(
+        ui,
+        Rect::from_center_size(rect.center(), Vec2::splat(14.0)),
+        action.icon,
+        action.tint,
+    );
+
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, tooltip));
+    response.on_hover_text(tooltip)
 }
 
 #[cfg(test)]
