@@ -2441,8 +2441,6 @@ fn form_label(ui: &mut Ui, text: &str, palette: &Palette) {
     );
 }
 
-/// A two-or-more option segmented control. The selected segment is raised; the
-/// others stay flush with the container until hovered.
 /// A tab bar: text labels over a full-width rule, with an accent indicator under
 /// the selected tab. The rule fills the row, the tabs size to their labels.
 fn tab_bar<T: Copy + PartialEq>(
@@ -2533,6 +2531,9 @@ fn tab_bar<T: Copy + PartialEq>(
     changed
 }
 
+/// A two-or-more option control built from buttons joined at the side: one
+/// shared outline, the selected segment raised, and only the group's outer
+/// corners rounded.
 fn segmented_control<T: Copy + PartialEq>(
     ui: &mut Ui,
     options: &[(T, &str)],
@@ -2543,56 +2544,48 @@ fn segmented_control<T: Copy + PartialEq>(
     let mut changed = false;
     let count = options.len();
     let count_f = count as f32;
-    let available = ui.available_width();
-    let total = (min_width * count_f + (count_f - 1.0) + 4.0).min(available);
+    let total = (min_width * count_f).min(ui.available_width());
     let (outer, _) = ui.allocate_exact_size(Vec2::new(total, CONTROL_HEIGHT), Sense::hover());
-
-    let painter = ui.painter();
-    painter.rect_filled(outer, CornerRadius::same(RADIUS.sm), palette.surface_muted);
-    painter.rect_stroke(
-        outer,
-        CornerRadius::same(RADIUS.sm),
-        Stroke::new(1.0_f32, palette.border),
-        StrokeKind::Inside,
-    );
-
-    // The segments sit inside the border with a 1px gap, so the control's own
-    // height is CONTROL_HEIGHT rather than the segments' height plus padding.
-    let track = outer.shrink(2.0);
-    let segment_width = ((track.width() - (count_f - 1.0)) / count_f).max(1.0);
-    let mut left = track.left();
+    let segment_width = total / count_f;
+    let radius = RADIUS.sm;
+    let border = Stroke::new(1.0_f32, palette.border);
 
     for (index, (value, label)) in options.iter().enumerate() {
+        let left = outer.left() + segment_width * index as f32;
         let rect = Rect::from_min_size(
-            pos2(left, track.top()),
-            Vec2::new(segment_width, track.height()),
+            pos2(left, outer.top()),
+            Vec2::new(segment_width, outer.height()),
         );
-        left += segment_width;
-        let response = ui.interact(rect, ui.id().with(("segment", index)), Sense::click());
         let is_selected = *selected == *value;
-        let painter = ui.painter();
+        let response = ui
+            .interact(rect, ui.id().with(("segment", index)), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
 
-        if is_selected {
-            painter.rect_filled(
-                rect,
-                CornerRadius::same(RADIUS.sm.saturating_sub(1)),
-                palette.surface_strong,
-            );
+        // Square inner corners and rounded outer ones, so neighbouring fills meet
+        // at a single shared border instead of each drawing its own.
+        let inner = index > 0;
+        let last = index + 1 == count;
+        let corners = CornerRadius {
+            nw: if inner { 0 } else { radius },
+            sw: if inner { 0 } else { radius },
+            ne: if last { radius } else { 0 },
+            se: if last { radius } else { 0 },
+        };
+
+        let fill = if is_selected {
+            palette.surface_strong
         } else if response.hovered() {
-            painter.rect_filled(
-                rect,
-                CornerRadius::same(0),
-                palette.surface_strong.gamma_multiply(0.5),
-            );
-        }
+            palette.surface_strong.gamma_multiply(0.5)
+        } else {
+            palette.surface_muted
+        };
 
-        if index > 0 {
+        let painter = ui.painter();
+        painter.rect_filled(rect, corners, fill);
+        if inner {
             painter.line_segment(
-                [
-                    pos2(rect.left(), rect.top() + 3.0),
-                    pos2(rect.left(), rect.bottom() - 3.0),
-                ],
-                Stroke::new(1.0_f32, palette.border),
+                [pos2(rect.left(), rect.top()), pos2(rect.left(), rect.bottom())],
+                border,
             );
         }
 
@@ -2618,6 +2611,14 @@ fn segmented_control<T: Copy + PartialEq>(
             changed = true;
         }
     }
+
+    // Painted last so the outline closes over the ends of the dividers.
+    ui.painter().rect_stroke(
+        outer,
+        CornerRadius::same(radius),
+        border,
+        StrokeKind::Inside,
+    );
 
     changed
 }
