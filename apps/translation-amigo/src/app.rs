@@ -39,7 +39,7 @@ const INPUT_MARGIN: Margin = Margin {
 /// pinned to 0.32, so the window keeps one height that fits the tallest layout
 /// (Multi, with its three sliders) and Single mode simply has some empty space.
 /// Revisit with an eframe upgrade.
-const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 740.0);
+const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 760.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 enum TranslationMode {
@@ -66,6 +66,9 @@ struct ProviderSlot {
     /// rather than as a flat list of samples.
     #[serde(default = "default_true")]
     diff_view: bool,
+    /// In the diff view, hide the struck-out removals and show only the result.
+    #[serde(default)]
+    hide_deletions: bool,
     #[serde(default)]
     register: Register,
     /// Situational context appended to this provider's prompt.
@@ -88,6 +91,7 @@ impl Default for ProviderSlot {
             model: OllamaModel::default(),
             mode: TranslationMode::Single,
             diff_view: true,
+            hide_deletions: false,
             register: Register::default(),
             context: String::new(),
             variants: DEFAULT_VARIANTS,
@@ -1872,6 +1876,15 @@ impl TranslationAmigoApp {
                                 .size(TYPE.small)
                                 .color(palette.text_secondary),
                         );
+
+                        if dialog.draft.diff_view {
+                            ui.checkbox(
+                                &mut dialog.draft.hide_deletions,
+                                RichText::new("Hide removed words")
+                                    .size(TYPE.small)
+                                    .color(palette.text_secondary),
+                            );
+                        }
                     }
 
                     ui.add_space(14.0);
@@ -2569,6 +2582,7 @@ fn render_variants(
             slot.id,
             group,
             None,
+            false,
             item_copied,
             palette,
             copy_requested,
@@ -2602,6 +2616,7 @@ fn render_variants(
             slot.id,
             group,
             ops.as_deref(),
+            slot.hide_deletions,
             item_copied,
             palette,
             copy_requested,
@@ -2654,11 +2669,13 @@ fn render_plain(
 
 /// One entry in the variants list: the full sentence, or its diff against the
 /// reference, plus how many samples produced it.
+#[allow(clippy::too_many_arguments)]
 fn variant_row(
     ui: &mut Ui,
     slot_id: u64,
     group: &diff::Variant,
     ops: Option<&[DiffOp]>,
+    hide_deletions: bool,
     item_copied: bool,
     palette: &Palette,
     copy_requested: &mut Option<(u64, Option<usize>)>,
@@ -2693,6 +2710,9 @@ fn variant_row(
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(4.0, 2.0);
                         for op in ops {
+                            if hide_deletions && matches!(op, DiffOp::Delete(_)) {
+                                continue;
+                            }
                             let rich = match op {
                                 DiffOp::Keep(text) => RichText::new(text)
                                     .size(TYPE.title)
