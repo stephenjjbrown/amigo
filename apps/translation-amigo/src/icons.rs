@@ -1,9 +1,9 @@
 //! Vector icons: Lucide SVGs embedded at build time and tinted at paint time, so
 //! they stay crisp at any DPI and never depend on font coverage.
 //!
-//! Sources and licences live beside the assets in `assets/icons/`: Lucide is ISC
-//! (`LUCIDE-LICENSE.txt`), and the Feather-derived glyphs we use (`trash`,
-//! `check`, `clock`) also carry Feather's MIT notice (`FEATHER-LICENSE.txt`).
+//! Sources and licences live beside the assets in `assets/icons/`. Every glyph is
+//! taken from Lucide, which is ISC (`LUCIDE-LICENSE.txt`); Lucide is a fork of
+//! Feather, so Feather's MIT notice (`FEATHER-LICENSE.txt`) is kept beside it.
 
 use eframe::egui::{
     self, style::WidgetVisuals, Button, Color32, Image, Rect, Response, Ui, Vec2, WidgetInfo,
