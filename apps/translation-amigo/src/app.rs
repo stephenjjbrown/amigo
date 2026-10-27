@@ -1619,12 +1619,7 @@ impl TranslationAmigoApp {
             .inner_margin(Margin::symmetric(14, 9))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("!")
-                            .size(TYPE.heading)
-                            .strong()
-                            .color(palette.danger),
-                    );
+                    icons::inline(ui, Icon::TriangleAlert, 16.0, palette.danger);
                     ui.add(
                         Label::new(
                             RichText::new(&message)
@@ -2246,6 +2241,7 @@ impl TranslationAmigoApp {
                     ui.add_space(14.0);
                     form_label(ui, "REGISTER", &palette);
                     egui::ComboBox::from_id_salt("provider_dialog_register")
+                        .icon(icons::combo_icon())
                         .selected_text(
                             RichText::new(dialog.draft.register.label())
                                 .size(TYPE.body)
@@ -2584,7 +2580,10 @@ fn segmented_control<T: Copy + PartialEq>(
         painter.rect_filled(rect, corners, fill);
         if inner {
             painter.line_segment(
-                [pos2(rect.left(), rect.top()), pos2(rect.left(), rect.bottom())],
+                [
+                    pos2(rect.left(), rect.top()),
+                    pos2(rect.left(), rect.bottom()),
+                ],
                 border,
             );
         }
@@ -2637,6 +2636,7 @@ fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Pal
             ui.end_row();
 
             egui::ComboBox::from_id_salt("provider_dialog_source")
+                .icon(icons::combo_icon())
                 .selected_text(
                     RichText::new(pair.source.label())
                         .size(TYPE.body)
@@ -2658,6 +2658,7 @@ fn pair_controls(ui: &mut Ui, pair: &mut LangPair, kind: Provider, palette: &Pal
             }
 
             egui::ComboBox::from_id_salt("provider_dialog_target")
+                .icon(icons::combo_icon())
                 .selected_text(
                     RichText::new(pair.target.label())
                         .size(TYPE.body)
@@ -2694,6 +2695,7 @@ fn model_combo(
     let available = |model: OllamaModel| status.map(|s| s.can_use(model)).unwrap_or(false);
 
     egui::ComboBox::from_id_salt("provider_dialog_model")
+        .icon(icons::combo_icon())
         .selected_text(
             RichText::new(slot.model.label())
                 .size(TYPE.body)
@@ -3294,53 +3296,11 @@ fn swap_button(ui: &mut Ui, palette: &Palette) -> Response {
     } else {
         palette.text_secondary
     };
-    let stroke = Stroke::new(1.5_f32, color);
-    let center = rect.center();
-    let top_y = center.y - 3.0;
-    let bottom_y = center.y + 3.0;
-
-    painter.line_segment(
-        [
-            egui::pos2(center.x - 5.0, top_y),
-            egui::pos2(center.x + 4.0, top_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            egui::pos2(center.x + 1.5, top_y - 3.0),
-            egui::pos2(center.x + 5.0, top_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            egui::pos2(center.x + 1.5, top_y + 3.0),
-            egui::pos2(center.x + 5.0, top_y),
-        ],
-        stroke,
-    );
-
-    painter.line_segment(
-        [
-            egui::pos2(center.x - 4.0, bottom_y),
-            egui::pos2(center.x + 5.0, bottom_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            egui::pos2(center.x - 1.5, bottom_y - 3.0),
-            egui::pos2(center.x - 5.0, bottom_y),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            egui::pos2(center.x - 1.5, bottom_y + 3.0),
-            egui::pos2(center.x - 5.0, bottom_y),
-        ],
-        stroke,
+    icons::paint_at(
+        ui,
+        Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+        Icon::ArrowRightLeft,
+        color,
     );
 
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -3409,17 +3369,16 @@ fn preset_picker(
         galley,
         text_color,
     );
-    // A caret, drawn rather than set as a glyph so it never depends on font coverage.
-    // It stays visible while the menu is closed, so the control reads as a menu.
-    let caret = pos2(button.rect.right() - PAD - 2.0, button.rect.center().y);
-    let stroke = Stroke::new(1.5_f32, palette.text_muted);
-    ui.painter().line_segment(
-        [caret + Vec2::new(-4.0, -2.0), caret + Vec2::new(0.0, 2.0)],
-        stroke,
-    );
-    ui.painter().line_segment(
-        [caret + Vec2::new(0.0, 2.0), caret + Vec2::new(4.0, -2.0)],
-        stroke,
+    // The caret stays visible while the menu is closed, so the control reads as
+    // a menu rather than a text field.
+    icons::paint_at(
+        ui,
+        Rect::from_center_size(
+            pos2(button.rect.right() - PAD - 7.0, button.rect.center().y),
+            Vec2::splat(14.0),
+        ),
+        Icon::ChevronDown,
+        palette.text_muted,
     );
 
     let mut action = None;

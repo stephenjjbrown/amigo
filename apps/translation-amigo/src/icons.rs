@@ -6,7 +6,8 @@
 //! `check`, `clock`) also carry Feather's MIT notice (`FEATHER-LICENSE.txt`).
 
 use eframe::egui::{
-    self, Button, Color32, Image, Rect, Response, Ui, Vec2, WidgetInfo, WidgetType,
+    self, style::WidgetVisuals, Button, Color32, Image, Rect, Response, Ui, Vec2, WidgetInfo,
+    WidgetType,
 };
 
 use crate::theme::{Palette, CONTROL_HEIGHT, TYPE};
@@ -23,6 +24,9 @@ pub enum Icon {
     Eraser,
     Clock,
     Plus,
+    ChevronDown,
+    ArrowRightLeft,
+    TriangleAlert,
 }
 
 fn source(icon: Icon) -> egui::ImageSource<'static> {
@@ -37,6 +41,11 @@ fn source(icon: Icon) -> egui::ImageSource<'static> {
         Icon::Eraser => egui::include_image!("../../../assets/icons/eraser.svg"),
         Icon::Clock => egui::include_image!("../../../assets/icons/clock.svg"),
         Icon::Plus => egui::include_image!("../../../assets/icons/plus.svg"),
+        Icon::ChevronDown => egui::include_image!("../../../assets/icons/chevron-down.svg"),
+        Icon::ArrowRightLeft => {
+            egui::include_image!("../../../assets/icons/arrow-right-left.svg")
+        }
+        Icon::TriangleAlert => egui::include_image!("../../../assets/icons/triangle-alert.svg"),
     }
 }
 
@@ -82,6 +91,21 @@ pub fn menu_button(
 /// An inline icon for labels such as the elapsed-time readout.
 pub fn inline(ui: &mut Ui, icon: Icon, size: f32, tint: Color32) -> Response {
     ui.add(image(icon, size, tint))
+}
+
+/// Paints an icon centred in `rect` without adding a widget, for controls that
+/// have already claimed their own space.
+pub fn paint_at(ui: &Ui, rect: Rect, icon: Icon, tint: Color32) {
+    image(icon, rect.width(), tint).paint_at(ui, rect);
+}
+
+/// The arrow slot of a `ComboBox`, so pickers share the chevron used by the
+/// preset menu instead of egui's filled triangle.
+pub fn combo_icon() -> impl FnOnce(&Ui, Rect, &WidgetVisuals, bool) + 'static {
+    |ui, rect, visuals, _open| {
+        let rect = Rect::from_center_size(rect.center(), Vec2::splat(14.0));
+        image(Icon::ChevronDown, 14.0, visuals.text_color()).paint_at(ui, rect);
+    }
 }
 
 /// An icon rendered beside its label, for buttons that keep their text.
