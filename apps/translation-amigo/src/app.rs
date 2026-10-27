@@ -3423,9 +3423,11 @@ fn preset_menu_row(
     preset: &Preset,
     index: usize,
 ) -> Option<PresetAction> {
-    const ROW_HEIGHT: f32 = 28.0;
+    // Menu rows take the control height: the combo boxes' own menu rows are that
+    // tall because of `interact_size`, and the action buttons need the room.
+    const ROW_HEIGHT: f32 = CONTROL_HEIGHT;
     const SIDE_PAD: f32 = 8.0;
-    const ACTION_SIZE: f32 = 24.0;
+    const ACTION_SIZE: f32 = CONTROL_HEIGHT - 8.0;
     const ACTION_GAP: f32 = 2.0;
 
     let mut action = None;
