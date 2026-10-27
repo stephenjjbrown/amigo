@@ -3496,7 +3496,6 @@ fn preset_menu_row(
             fill: palette.surface_muted,
             hover_fill: palette.surface_strong,
         },
-        palette,
         "Rename preset",
     )
     .clicked()
@@ -3513,7 +3512,6 @@ fn preset_menu_row(
             fill: palette.danger_soft,
             hover_fill: palette.danger_border,
         },
-        palette,
         "Delete preset",
     )
     .clicked()
@@ -3526,20 +3524,12 @@ fn preset_menu_row(
 
 /// A full-height action cell at the right end of a menu row. It paints its own
 /// fill and hover state, so a run of cells reads as joined buttons.
-fn menu_action(
-    ui: &mut Ui,
-    id: Id,
-    rect: Rect,
-    action: MenuAction,
-    palette: &Palette,
-    tooltip: &str,
-) -> Response {
+fn menu_action(ui: &mut Ui, id: Id, rect: Rect, action: MenuAction, tooltip: &str) -> Response {
     let response = ui
         .interact(rect, id, Sense::click())
         .on_hover_cursor(CursorIcon::PointingHand);
 
-    let painter = ui.painter();
-    painter.rect_filled(
+    ui.painter().rect_filled(
         rect,
         CornerRadius::ZERO,
         if response.hovered() {
@@ -3547,12 +3537,6 @@ fn menu_action(
         } else {
             action.fill
         },
-    );
-    // A hairline on the leading edge separates the cell from the row and from the
-    // cell before it.
-    painter.line_segment(
-        [rect.left_top(), rect.left_bottom()],
-        Stroke::new(1.0_f32, palette.border),
     );
     icons::paint_at(
         ui,
