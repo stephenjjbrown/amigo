@@ -133,6 +133,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "amigo"
+version = "0.1.0"
+dependencies = [
+ "deepl-core",
+ "deepl-engine",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "log",
+ "serde",
+ "wgpu",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3766,20 +3780,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
-]
-
-[[package]]
-name = "translation-amigo"
-version = "0.1.0"
-dependencies = [
- "deepl-core",
- "deepl-engine",
- "eframe",
- "egui",
- "egui_extras",
- "log",
- "serde",
- "wgpu",
 ]
 
 [[package]]

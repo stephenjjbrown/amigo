@@ -225,7 +225,7 @@ impl McpClient {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "Translation Amigo",
+                    "name": "Amigo",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
             },

@@ -6,7 +6,7 @@ mod icons;
 mod logging;
 mod theme;
 
-use app::TranslationAmigoApp;
+use app::AmigoApp;
 
 fn main() -> eframe::Result<()> {
     logging::init();
@@ -15,13 +15,13 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([780.0, 540.0])
-            .with_title("Translation Amigo"),
+            .with_title("Amigo"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Translation Amigo",
+        "Amigo",
         options,
-        Box::new(|cc| Ok(Box::new(TranslationAmigoApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(AmigoApp::new(cc)))),
     )
 }

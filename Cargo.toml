@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/deepl-core", "crates/deepl-engine", "apps/translation-amigo"]
+members = ["crates/deepl-core", "crates/deepl-engine", "apps/amigo"]
 
 [workspace.package]
 version = "0.1.0"

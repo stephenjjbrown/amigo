@@ -1,4 +1,4 @@
-# Translation Amigo
+# Amigo
 
 A native, pure-Rust desktop translation client with two providers: DeepL over
 its hosted MCP service, and a local Ollama TranslateGemma model. Enable either
@@ -6,7 +6,7 @@ or both; when both are enabled, translations appear side by side for comparison.
 The UI is `egui` on `wgpu`; there is no WebView, no JavaScript, and no local web
 server.
 
-![Translation Amigo](assets/icon.png)
+![Amigo](assets/icon.png)
 
 ## What works
 
@@ -36,7 +36,7 @@ server.
 ## Architecture
 
 ```text
-apps/translation-amigo   egui + eframe UI on wgpu (thin, no business logic)
+apps/amigo               egui + eframe UI on wgpu (thin, no business logic)
         │
         │  Command / Event channels (std::sync::mpsc)
         ▼
@@ -77,7 +77,7 @@ The REST API client in `crates/deepl-core/src/api.rs` is retained for a possible
 future API-key backend, but it is **not wired into the app**.
 
 **Credential storage:** this prototype writes the DeepL session and OAuth client
-registration to `~/Library/Application Support/Translation Amigo/` with `0600`
+registration to `~/Library/Application Support/Amigo/` with `0600`
 permissions. That avoids macOS Keychain invalidation on every ad-hoc rebuild. A
 release build should move this back into the Keychain (or another OS credential
 store) with a stable signing identity.
@@ -107,7 +107,7 @@ Requirements: a recent stable Rust toolchain (built with Rust 1.100), Python 3
 only for regenerating icons, and Ollama for the local provider.
 
 ```sh
-cargo run -p translation-amigo
+cargo run -p amigo
 ```
 
 On first launch, enable the providers you want. DeepL opens a browser sign-in;
@@ -122,7 +122,7 @@ ollama pull translategemma:4b
 
 ```sh
 ./scripts/bundle-macos.sh
-open "dist/Translation Amigo.app"
+open "dist/Amigo.app"
 ```
 
 The script builds the release binary, generates `AppIcon.icns` in pure Python,
@@ -145,8 +145,8 @@ writes `Info.plist`, and ad-hoc signs the bundle. The result is a ~9 MB app in
 
 ## Logging and diagnostics
 
-- Logs are written to `~/Library/Logs/Translation Amigo/translation-amigo.log` (rotated
-  once at 1 MB to `translation-amigo.log.old`).
+- Logs are written to `~/Library/Logs/Amigo/amigo.log` (rotated once at 1 MB
+  to `amigo.log.old`).
 - Default logging records the sign-in lifecycle, session load, translation
   summaries, and errors — including JSON-RPC codes, error details, HTTP status,
   and DeepL's `X-Trace-ID`.
@@ -187,7 +187,7 @@ crates/deepl-core/
 crates/deepl-engine/
   src/lib.rs          Command/Event engine on its own thread
 
-apps/translation-amigo/
+apps/amigo/
   src/main.rs         eframe entry point
   src/app.rs          UI, provider state, shortcuts, settings, diagnostics
   src/logging.rs      file logger + in-memory ring buffer

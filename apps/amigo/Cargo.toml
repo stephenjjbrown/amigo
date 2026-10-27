@@ -1,11 +1,11 @@
 [package]
-name = "translation-amigo"
+name = "amigo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "translation-amigo"
+name = "amigo"
 path = "src/main.rs"
 
 [dependencies]

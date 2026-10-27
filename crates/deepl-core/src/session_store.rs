@@ -17,32 +17,38 @@ use crate::error::ApiError;
 const MCP_SESSION_FILE: &str = "mcp-session.json";
 const MCP_CLIENT_FILE: &str = "mcp-client.json";
 
+/// Directory under the platform's support folder. eframe derives its own
+/// preferences directory from the application name, so the two must agree.
+const APP_DIR: &str = "Amigo";
+
 fn store_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join("Library/Application Support/Translation Amigo");
+            return PathBuf::from(home)
+                .join("Library/Application Support")
+                .join(APP_DIR);
         }
     }
 
     #[cfg(target_os = "windows")]
     {
         if let Some(base) = std::env::var_os("APPDATA") {
-            return PathBuf::from(base).join("Translation Amigo");
+            return PathBuf::from(base).join(APP_DIR);
         }
     }
 
     #[cfg(target_os = "linux")]
     {
         if let Some(base) = std::env::var_os("XDG_CONFIG_HOME") {
-            return PathBuf::from(base).join("translation-amigo");
+            return PathBuf::from(base).join(APP_DIR);
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".config/translation-amigo");
+            return PathBuf::from(home).join(".config").join(APP_DIR);
         }
     }
 
-    std::env::temp_dir().join("translation-amigo")
+    std::env::temp_dir().join(APP_DIR)
 }
 
 fn ensure_dir() -> Result<PathBuf, ApiError> {

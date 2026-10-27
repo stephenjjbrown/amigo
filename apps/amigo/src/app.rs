@@ -400,7 +400,7 @@ struct ProviderDialog {
     position: Option<egui::Pos2>,
 }
 
-pub struct TranslationAmigoApp {
+pub struct AmigoApp {
     engine: Engine,
     prefs: Preferences,
 
@@ -435,7 +435,7 @@ pub struct TranslationAmigoApp {
     onboarded: bool,
 }
 
-impl TranslationAmigoApp {
+impl AmigoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -884,10 +884,7 @@ impl TranslationAmigoApp {
 
     fn diagnostics_text(&self) -> String {
         let mut text = String::new();
-        text.push_str(&format!(
-            "Translation Amigo {}\n",
-            env!("CARGO_PKG_VERSION")
-        ));
+        text.push_str(&format!("Amigo {}\n", env!("CARGO_PKG_VERSION")));
         text.push_str(&format!(
             "OS: {} {}\n",
             std::env::consts::OS,
@@ -2398,7 +2395,7 @@ impl TranslationAmigoApp {
     }
 }
 
-impl eframe::App for TranslationAmigoApp {
+impl eframe::App for AmigoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.now = ctx.input(|input| input.time);
 
