@@ -8,11 +8,13 @@ use deepl_core::{
 };
 use deepl_engine::{Command, Engine, Event, ProviderJob};
 use eframe::egui::{
-    self, Align, Align2, Button, Color32, CornerRadius, FontId, Frame, Id, Label, Layout, Margin,
-    Response, RichText, ScrollArea, Sense, Stroke, TextEdit, Ui, Vec2,
+    self, pos2, text::LayoutJob, Align, Align2, Button, Color32, CornerRadius, CursorIcon, FontId,
+    Frame, Id, Label, Layout, Margin, Rect, Response, RichText, ScrollArea, Sense, Stroke,
+    TextEdit, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
 use crate::diff::{self, DiffOp};
+use crate::icons::{self, Icon};
 use crate::theme::{card_frame, inset_frame, panel_frame, semibold, Palette, RADIUS, TYPE};
 
 const AUTO_TRANSLATE_DELAY: f64 = 0.85;
@@ -22,7 +24,7 @@ const DEFAULT_VARIANTS: usize = 5;
 const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
 const DEFAULT_MULTI_TOP_P: f32 = 0.95;
 /// Every button is this tall, so primary and secondary actions line up.
-const BUTTON_HEIGHT: f32 = 32.0;
+pub(crate) const BUTTON_HEIGHT: f32 = 32.0;
 /// Padding inside a one-line text input.
 const INPUT_MARGIN: Margin = Margin {
     left: 10,
@@ -439,6 +441,7 @@ pub struct TranslationAmigoApp {
 impl TranslationAmigoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let prefs = {
             let mut prefs = cc
@@ -1294,47 +1297,103 @@ impl TranslationAmigoApp {
                         );
                     }
 
-                    for (index, preset) in presets.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let name = ui.add_sized(
-                                Vec2::new(200.0, 24.0),
-                                Label::new(
-                                    RichText::new(&preset.name)
-                                        .size(TYPE.body)
-                                        .color(palette.text),
-                                )
-                                .truncate()
-                                .sense(Sense::click()),
-                            );
-                            name.clone().on_hover_text(&preset.name);
-                            if name.clicked() {
-                                load = Some(index);
-                                ui.close();
-                            }
+                    // Each row owns its whole width so the hover highlight spans
+                    // the menu and the name sits hard against the left edge.
+                    let row_height = 26.0;
+                    let icon_box = 24.0;
+                    let icon_gap = 4.0;
+                    let icon_margin = 2.0;
+                    let icons_width = icon_box * 2.0 + icon_gap + icon_margin;
+                    let row_width = ui.available_width();
+                    ui.spacing_mut().item_spacing.y = 2.0;
 
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                if icon_button(ui, "×", palette.danger, palette.danger_soft)
-                                    .on_hover_text("Delete preset")
-                                    .clicked()
-                                {
-                                    delete = Some(index);
-                                    ui.close();
-                                }
-                                if icon_button(
-                                    ui,
-                                    "✎",
-                                    palette.text_secondary,
-                                    palette.surface_muted,
-                                )
-                                .on_hover_text("Rename preset")
-                                .clicked()
-                                {
-                                    rename = Some(index);
-                                    ui.close();
-                                }
-                            });
+                    for (index, preset) in presets.iter().enumerate() {
+                        let (row_rect, _) = ui
+                            .allocate_exact_size(Vec2::new(row_width, row_height), Sense::hover());
+
+                        if ui.rect_contains_pointer(row_rect) {
+                            ui.painter().rect_filled(
+                                row_rect,
+                                CornerRadius::same(RADIUS.sm),
+                                palette.surface_strong,
+                            );
+                        }
+
+                        // Painted rather than added as a widget: `add_sized` centres
+                        // its child, and the label has to start at the left edge.
+                        let name_rect = row_rect.with_max_x(row_rect.right() - icons_width);
+                        let mut job = LayoutJob::simple_singleline(
+                            preset.name.clone(),
+                            FontId::proportional(TYPE.body),
+                            palette.text,
+                        );
+                        job.wrap.max_width = (name_rect.width() - 16.0).max(1.0);
+                        job.wrap.max_rows = 1;
+                        job.wrap.break_anywhere = true;
+                        let galley = ui.painter().layout_job(job);
+                        ui.painter().galley(
+                            pos2(
+                                name_rect.left() + 8.0,
+                                name_rect.center().y - galley.size().y / 2.0,
+                            ),
+                            galley.clone(),
+                            palette.text,
+                        );
+
+                        let mut name = ui
+                            .interact(
+                                name_rect,
+                                ui.id().with(("preset_name", index)),
+                                Sense::click(),
+                            )
+                            .on_hover_cursor(CursorIcon::PointingHand);
+                        name.widget_info(|| {
+                            WidgetInfo::labeled(WidgetType::Button, true, &preset.name)
                         });
+                        if galley.elided {
+                            name = name.on_hover_text(&preset.name);
+                        }
+                        if name.clicked() {
+                            load = Some(index);
+                            ui.close();
+                        }
+
+                        let trash_rect = Rect::from_center_size(
+                            pos2(
+                                row_rect.right() - icon_margin - icon_box / 2.0,
+                                row_rect.center().y,
+                            ),
+                            Vec2::splat(icon_box),
+                        );
+                        let pencil_rect =
+                            trash_rect.translate(Vec2::new(-(icon_box + icon_gap), 0.0));
+
+                        if icons::menu_button(
+                            ui,
+                            pencil_rect,
+                            Icon::Pencil,
+                            palette.text_secondary,
+                            palette.surface_muted,
+                            "Rename preset",
+                        )
+                        .clicked()
+                        {
+                            rename = Some(index);
+                            ui.close();
+                        }
+                        if icons::menu_button(
+                            ui,
+                            trash_rect,
+                            Icon::Trash,
+                            palette.danger,
+                            palette.danger_soft,
+                            "Delete preset",
+                        )
+                        .clicked()
+                        {
+                            delete = Some(index);
+                            ui.close();
+                        }
                     }
                 });
 
@@ -1343,7 +1402,7 @@ impl TranslationAmigoApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if secondary_button(ui, "Settings", palette).clicked() {
+                if icons::labeled_button(ui, Icon::Settings, "Settings", palette).clicked() {
                     open_settings = true;
                 }
             });
@@ -1590,7 +1649,7 @@ impl TranslationAmigoApp {
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(8.0);
-                            if secondary_button(ui, "Clear", palette).clicked() {
+                            if icons::labeled_button(ui, Icon::Eraser, "Clear", palette).clicked() {
                                 clear_requested = true;
                             }
                         });
@@ -1666,7 +1725,14 @@ impl TranslationAmigoApp {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if secondary_button(ui, "+ Add Translation Provider", palette).clicked() {
+                        if icons::labeled_button(
+                            ui,
+                            Icon::Plus,
+                            "Add Translation Provider",
+                            palette,
+                        )
+                        .clicked()
+                        {
                             add_requested = true;
                         }
                     });
@@ -2095,7 +2161,14 @@ impl TranslationAmigoApp {
 
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if secondary_button(ui, "Refresh model list", palette).clicked() {
+                            if icons::labeled_button(
+                                ui,
+                                Icon::Refresh,
+                                "Refresh model list",
+                                palette,
+                            )
+                            .clicked()
+                            {
                                 refresh_ollama = true;
                             }
                         });
@@ -2179,12 +2252,12 @@ impl TranslationAmigoApp {
                                         close_clicked = true;
                                     }
                                     ui.add_space(4.0);
-                                    let label = if diagnostics_copied {
-                                        "Copied"
+                                    let (icon, label) = if diagnostics_copied {
+                                        (Icon::Check, "Copied")
                                     } else {
-                                        "Copy diagnostics"
+                                        (Icon::Copy, "Copy diagnostics")
                                     };
-                                    if secondary_button(ui, label, palette).clicked() {
+                                    if icons::labeled_button(ui, icon, label, palette).clicked() {
                                         diagnostics_requested = true;
                                     }
                                 },
@@ -2924,44 +2997,61 @@ fn result_section(
         });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if danger_secondary_button(ui, "Remove", palette).clicked() {
+            if icons::button(
+                ui,
+                Icon::Trash,
+                BUTTON_HEIGHT,
+                palette.danger,
+                "Remove provider",
+            )
+            .clicked()
+            {
                 *delete_requested = Some(slot.id);
             }
-            if secondary_button(ui, "Configure", palette).clicked() {
+            if icons::button(
+                ui,
+                Icon::Sliders,
+                BUTTON_HEIGHT,
+                palette.text_secondary,
+                "Configure provider",
+            )
+            .clicked()
+            {
                 *edit_requested = Some(slot.id);
             }
             if !multiple && !outcome.translations.is_empty() {
-                let label = if copied && outcome.copied_index.is_none() {
-                    "Copied"
+                let (icon, tooltip) = if copied && outcome.copied_index.is_none() {
+                    (Icon::Check, "Copied")
                 } else {
-                    "Copy"
+                    (Icon::Copy, "Copy translation")
                 };
-                if secondary_button(ui, label, palette).clicked() {
+                if icons::button(ui, icon, BUTTON_HEIGHT, palette.text_secondary, tooltip).clicked()
+                {
                     *copy_requested = Some((slot.id, None));
                 }
             }
 
             let status = if translating {
-                "Translating…".to_string()
+                Some(("Translating…".to_string(), false))
             } else if stale {
-                "Text changed".to_string()
-            } else if let Some(ms) = outcome.elapsed_ms {
-                if outcome.translations.is_empty() {
-                    String::new()
-                } else {
-                    format!("{ms} ms")
-                }
+                Some(("Text changed".to_string(), false))
+            } else if !outcome.translations.is_empty() {
+                outcome.elapsed_ms.map(|ms| (format!("{ms} ms"), true))
             } else {
-                String::new()
+                None
             };
 
-            if !status.is_empty() {
+            if let Some((text, timed)) = status {
                 ui.add_space(6.0);
-                ui.label(RichText::new(status).size(TYPE.caption).color(if stale {
+                // Right-to-left: the label is added first, so the icon lands to its left.
+                ui.label(RichText::new(text).size(TYPE.caption).color(if stale {
                     palette.warning
                 } else {
                     palette.text_faint
                 }));
+                if timed {
+                    icons::inline(ui, Icon::Clock, 11.0, palette.text_faint);
+                }
             }
         });
     });
@@ -3143,8 +3233,13 @@ fn render_plain(
 
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 let item_copied = copied && outcome.copied_index == Some(index);
-                let label = if item_copied { "Copied" } else { "Copy" };
-                if secondary_button(ui, label, palette).clicked() {
+                let (icon, tooltip) = if item_copied {
+                    (Icon::Check, "Copied")
+                } else {
+                    (Icon::Copy, "Copy translation")
+                };
+                if icons::button(ui, icon, BUTTON_HEIGHT, palette.text_secondary, tooltip).clicked()
+                {
                     *copy_requested = Some((slot_id, Some(index)));
                 }
             });
@@ -3220,8 +3315,12 @@ fn variant_row(
         });
 
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-            let label = if item_copied { "Copied" } else { "Copy" };
-            if secondary_button(ui, label, palette).clicked() {
+            let (icon, tooltip) = if item_copied {
+                (Icon::Check, "Copied")
+            } else {
+                (Icon::Copy, "Copy translation")
+            };
+            if icons::button(ui, icon, BUTTON_HEIGHT, palette.text_secondary, tooltip).clicked() {
                 *copy_requested = Some((slot_id, Some(group.first_index)));
             }
         });
@@ -3270,15 +3369,6 @@ fn pane_header(
 }
 
 /// A small square action for menu rows: an icon on a tinted background.
-fn icon_button(ui: &mut Ui, glyph: &str, fg: Color32, bg: Color32) -> Response {
-    ui.add(
-        Button::new(RichText::new(glyph).size(TYPE.body).color(fg))
-            .fill(bg)
-            .stroke(Stroke::NONE)
-            .min_size(Vec2::splat(24.0)),
-    )
-}
-
 fn hairline(ui: &mut Ui, palette: &Palette) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());

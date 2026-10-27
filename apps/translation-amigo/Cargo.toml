@@ -18,6 +18,7 @@ eframe = { version = "0.32", default-features = false, features = [
     "wgpu",
 ] }
 egui = "0.32"
+egui_extras = { version = "0.32", features = ["svg"] }
 log = { workspace = true }
 serde = { workspace = true }
 # eframe's wgpu feature does not select a backend; enable Metal on macOS.

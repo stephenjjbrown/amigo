@@ -2,6 +2,7 @@
 
 mod app;
 mod diff;
+mod icons;
 mod logging;
 mod theme;
 
