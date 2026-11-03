@@ -13,9 +13,9 @@ renderer); there is no WebView and no local web server.
   from the app, no API key
 - **Ollama** against the local daemon, with TranslateGemma 4B/12B/27B, Gemma 4
   and DeepSeek V4.1 Flash (cloud) as models
-- Both providers are always available — choose one in the Translations header and
-  configure its pair, model, mode and sampling; saved as presets you can switch
-  between
+- Both providers are always available — choose one in the Translations header,
+  pick the language pair in the top bar, and configure that provider's model,
+  mode and sampling in its dialog
 - **Multi-sample mode**: several translations of one sentence, shown as
   word-level diffs against the most typical sample, with duplicate samples
   grouped
@@ -55,7 +55,7 @@ Python, writes `Info.plist`, and ad-hoc signs the result.
 
 | Path | Contents |
 |---|---|
-| `~/Library/Application Support/Amigo/preferences.json` | providers, presets, options |
+| `~/Library/Application Support/Amigo/preferences.json` | providers, options |
 | `~/Library/Application Support/Amigo/mcp-session.json` | DeepL OAuth session (0600) |
 | `~/Library/Application Support/Amigo/mcp-client.json` | DeepL client registration (0600) |
 | `~/Library/Logs/Amigo/amigo.log` | log, rotated once at 1 MB |

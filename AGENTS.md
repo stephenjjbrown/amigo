@@ -91,8 +91,7 @@ apps/amigo/src/app/state.rs    AppState: the model (engine, prefs, results). No 
 apps/amigo/src/app/mod.rs      the main window: panes, cards, action bar
 apps/amigo/src/app/windows.rs  open_dialog + dialog launchers (App::defer rule)
 apps/amigo/src/settings.rs     Settings window
-apps/amigo/src/provider.rs     Add/Edit provider window
-apps/amigo/src/dialogs.rs      name prompt and delete confirmation
+apps/amigo/src/provider.rs     Configure provider window
 apps/amigo/src/ui.rs           component vocabulary (controls, roots, labels…)
 apps/amigo/src/format.rs       text derived from a slot (card title/subtitle)
 apps/amigo/src/theme.rs        palette, type scale, radii, crate theme mapping
@@ -110,7 +109,7 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
 - Views hold `Entity<AppState>` and read it during render; they never hold a
   second copy of its data. Window handles live on `AmigoApp` because they belong
   to the view layer.
-- State changes are commands (`sign_in`, `save_provider`, `load_preset`, …).
+- State changes are commands (`sign_in`, `save_provider`, `set_source_language`, …).
   Views call them with `state.update(cx, |state, cx| ...)`.
 - When state needs something only a view can do — opening a window — it emits
   `AppEvent` and `AmigoApp` handles it in `subscribe`. Do not add a window handle
@@ -136,6 +135,11 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
   in. There is nothing to add or delete: the UI selects and configures, nothing
   else. `translate` sends one job for the selected kind. Do not reintroduce
   provider ids, add/remove actions, or a card per provider.
+- **Presets are out of the UI for now.** The core model (`Preset`,
+  `Preferences::save_preset/apply_preset/…`) is still there and still migrated,
+  but no window references it. Their old place in the top bar now holds the
+  language controls (FROM / swap / TO) for the selected provider; do not bring
+  the preset picker back without moving them somewhere deliberate.
 - Booleans are `Switch`es; continuous values are `Slider`s; small integer counts
   are − / + steppers. Compact actions sit in a row, not stretched across it.
 - Icon-only buttons need a tooltip **and** an accesskit label — `ui::labeled`
