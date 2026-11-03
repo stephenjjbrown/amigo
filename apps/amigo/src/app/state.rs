@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use deepl_core::config::{Preferences, ProviderSlot};
-use deepl_core::{OllamaModel, OllamaStatus, SessionStatus, MAX_PARALLEL_LIMIT};
+use deepl_core::{OllamaModel, OllamaStatus, Provider, SessionStatus, MAX_PARALLEL_LIMIT};
 use deepl_engine::{Command, Engine, Event, ProviderJob};
 use gpui_kit::{ClipboardItem, Context, EventEmitter};
 
@@ -25,21 +25,12 @@ pub enum PromptAction {
     Rename(usize),
 }
 
-/// The destructive action a confirmation window carries out.
-#[derive(Clone, Copy)]
-pub enum ConfirmAction {
-    DeletePreset(usize),
-    DeleteProvider(u64),
-}
-
 /// A window the state needs the view to open. This is the only thing state asks
 /// of a view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppEvent {
     /// Settings, where the DeepL session and Ollama live.
     ShowSettings,
-    /// The provider dialog, which is where providers are added.
-    ShowProviders,
 }
 
 /// What a provider slot last returned.
@@ -72,10 +63,14 @@ pub struct SettingsSnapshot {
 pub struct AppState {
     engine: Engine,
     prefs: Preferences,
-    /// Set while a batch is in flight, so the button can read "Translating…".
+    /// Set while a translation is in flight, so the button reads "Translating…".
     translating: bool,
     next_request: u64,
-    outcomes: HashMap<u64, SlotOutcome>,
+    /// The provider the in-flight request belongs to, so its report clears the
+    /// flag even if the selection moved on.
+    pending_provider: Option<Provider>,
+    /// The last result for each provider, kept when a different one is selected.
+    outcomes: HashMap<Provider, SlotOutcome>,
     /// DeepL session state, as last reported by the engine.
     session: Option<SessionStatus>,
     signing_in: bool,
@@ -125,6 +120,7 @@ impl AppState {
             prefs,
             translating: false,
             next_request: 0,
+            pending_provider: None,
             outcomes: HashMap::new(),
             session: None,
             signing_in: false,
@@ -144,7 +140,7 @@ impl AppState {
     fn handle(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::ProviderTranslation {
-                slot_id,
+                provider,
                 result,
                 elapsed_ms,
                 ..
@@ -161,7 +157,7 @@ impl AppState {
                     Err(error) => (Vec::new(), Some(error.message)),
                 };
                 self.outcomes.insert(
-                    slot_id,
+                    provider,
                     SlotOutcome {
                         translations,
                         error,
@@ -170,7 +166,10 @@ impl AppState {
                         source_text,
                     },
                 );
-                self.finish_batch_if_complete();
+                if self.pending_provider == Some(provider) {
+                    self.translating = false;
+                    self.pending_provider = None;
+                }
             }
             Event::SessionLoaded(result) => match result {
                 Ok(status) => {
@@ -204,6 +203,7 @@ impl AppState {
             Event::SignedOut(result) => {
                 self.signing_in = false;
                 self.translating = false;
+                self.pending_provider = None;
                 self.outcomes.clear();
                 match result {
                     Ok(status) => self.session = Some(status),
@@ -238,6 +238,17 @@ impl AppState {
         &self.prefs
     }
 
+    /// The provider in use, or `None` for the "Select Provider" state.
+    pub fn selected_provider(&self) -> Option<Provider> {
+        self.prefs.selected_provider
+    }
+
+    /// The configuration of the selected provider.
+    pub fn selected_slot(&self) -> Option<&ProviderSlot> {
+        let kind = self.selected_provider()?;
+        self.prefs.slot(kind)
+    }
+
     pub fn signed_in(&self) -> bool {
         self.session.map(|status| status.signed_in).unwrap_or(false)
     }
@@ -250,8 +261,8 @@ impl AppState {
         self.translating
     }
 
-    pub fn outcome(&self, slot_id: u64) -> Option<&SlotOutcome> {
-        self.outcomes.get(&slot_id)
+    pub fn outcome(&self, provider: Provider) -> Option<&SlotOutcome> {
+        self.outcomes.get(&provider)
     }
 
     pub fn global_error(&self) -> Option<&str> {
@@ -317,13 +328,10 @@ impl AppState {
         }
     }
 
-    pub fn all_configured(&self) -> bool {
-        !self.prefs.providers.is_empty()
-            && self
-                .prefs
-                .providers
-                .iter()
-                .all(|slot| self.slot_configured(slot))
+    /// Whether the selected provider can translate right now.
+    pub fn selected_configured(&self) -> bool {
+        self.selected_slot()
+            .is_some_and(|slot| self.slot_configured(slot))
     }
 
     pub fn settings_snapshot(&self) -> SettingsSnapshot {
@@ -370,15 +378,13 @@ impl AppState {
         ));
         for slot in &self.prefs.providers {
             match slot.kind {
-                deepl_core::Provider::DeepL => text.push_str(&format!(
-                    "  - #{} DeepL {} -> {}\n",
-                    slot.id,
+                Provider::DeepL => text.push_str(&format!(
+                    "  - DeepL {} -> {}\n",
                     slot.pair.source.code(),
                     slot.pair.target.code()
                 )),
-                deepl_core::Provider::Ollama => text.push_str(&format!(
-                    "  - #{} Ollama {} -> {} model={} mode={:?} variants={} temperature={} top_p={} register={:?}\n",
-                    slot.id,
+                Provider::Ollama => text.push_str(&format!(
+                    "  - Ollama {} -> {} model={} mode={:?} variants={} temperature={} top_p={} register={:?}\n",
                     slot.pair.source.code(),
                     slot.pair.target.code(),
                     slot.model.id(),
@@ -412,14 +418,17 @@ impl AppState {
 
     // ----- Commands ------------------------------------------------------
 
-    /// Translate `text` with every configured provider. If the app is not ready,
-    /// this only asks the view to open the window that fixes it.
+    /// Translate `text` with the selected provider. If that provider is not
+    /// ready, this only asks the view to open the window that fixes it.
     pub fn translate(&mut self, text: String, cx: &mut Context<Self>) {
-        if self.prefs.providers.is_empty() {
-            cx.emit(AppEvent::ShowProviders);
+        let Some(kind) = self.selected_provider() else {
+            // Nothing selected: the action bar already reads "Select a provider".
             return;
-        }
-        if !self.all_configured() {
+        };
+        let Some(slot) = self.prefs.slot(kind).cloned() else {
+            return;
+        };
+        if !self.slot_configured(&slot) {
             cx.emit(AppEvent::ShowSettings);
             return;
         }
@@ -431,18 +440,34 @@ impl AppState {
         self.next_request += 1;
         let request_id = self.next_request;
         self.translating = true;
-        self.outcomes.clear();
+        self.pending_provider = Some(kind);
+        // Only the selected provider's result is being replaced; the other is
+        // kept and shown again when it is selected.
+        self.outcomes.remove(&kind);
 
         self.engine.send(Command::Translate {
             request_id,
             text,
-            jobs: self.jobs(),
+            job: self.job_for(&slot),
         });
         cx.notify();
     }
 
-    pub fn copy(&mut self, slot_id: u64, index: usize, cx: &mut Context<Self>) {
-        let Some(outcome) = self.outcomes.get_mut(&slot_id) else {
+    /// Show, and from now on translate with, a provider. `None` is the
+    /// "Select Provider" state.
+    pub fn select_provider(&mut self, provider: Option<Provider>, cx: &mut Context<Self>) {
+        if self.prefs.selected_provider == provider {
+            return;
+        }
+        if provider.is_none_or(|kind| self.prefs.slot(kind).is_some()) {
+            self.prefs.selected_provider = provider;
+            self.prefs.save();
+            cx.notify();
+        }
+    }
+
+    pub fn copy(&mut self, provider: Provider, index: usize, cx: &mut Context<Self>) {
+        let Some(outcome) = self.outcomes.get_mut(&provider) else {
             return;
         };
         let Some(text) = outcome.translations.get(index).cloned() else {
@@ -464,35 +489,18 @@ impl AppState {
         cx.notify();
     }
 
-    /// Carry out a confirmed destructive action.
-    pub fn confirm(&mut self, action: ConfirmAction, cx: &mut Context<Self>) {
-        match action {
-            ConfirmAction::DeletePreset(index) => self.delete_preset(index, cx),
-            ConfirmAction::DeleteProvider(id) => self.remove_provider(id, cx),
+    /// Save one provider's configuration. Configuring is the only way a
+    /// provider changes: there is nothing to add or remove.
+    pub fn save_provider(&mut self, draft: ProviderSlot, cx: &mut Context<Self>) {
+        let kind = draft.kind;
+        self.prefs.set_slot(draft);
+        self.outcomes.remove(&kind);
+        // Configuring the provider that is not selected should not switch away
+        // from the one the user is looking at, but the first configuration does
+        // pick one.
+        if self.prefs.selected_provider.is_none() {
+            self.prefs.selected_provider = Some(kind);
         }
-    }
-
-    pub fn save_provider(&mut self, mut draft: ProviderSlot, cx: &mut Context<Self>) {
-        if draft.id == 0 {
-            draft.id = self.prefs.allocate_slot_id();
-            self.prefs.providers.push(draft);
-        } else if let Some(slot) = self
-            .prefs
-            .providers
-            .iter_mut()
-            .find(|slot| slot.id == draft.id)
-        {
-            *slot = draft;
-        }
-
-        self.outcomes.clear();
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn remove_provider(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.prefs.providers.retain(|slot| slot.id != id);
-        self.outcomes.remove(&id);
         self.prefs.save();
         cx.notify();
     }
@@ -582,41 +590,22 @@ impl AppState {
 
     // ----- Internals -----------------------------------------------------
 
-    /// The batch is done once every configured slot has reported.
-    fn finish_batch_if_complete(&mut self) {
-        if self.translating
-            && self
-                .prefs
-                .providers
-                .iter()
-                .all(|slot| self.outcomes.contains_key(&slot.id))
-        {
-            self.translating = false;
+    fn job_for(&self, slot: &ProviderSlot) -> ProviderJob {
+        match slot.kind {
+            Provider::DeepL => ProviderJob::DeepL {
+                source: slot.pair.source,
+                target: slot.pair.target,
+            },
+            Provider::Ollama => ProviderJob::Ollama {
+                source: slot.pair.source,
+                target: slot.pair.target,
+                model: slot.model.id().to_string(),
+                register: slot.register,
+                context: slot.context().map(str::to_string),
+                sampling: slot.sampling(),
+                count: slot.count(),
+                parallel: self.prefs.parallel_for(slot.model),
+            },
         }
-    }
-
-    fn jobs(&self) -> Vec<ProviderJob> {
-        self.prefs
-            .providers
-            .iter()
-            .map(|slot| match slot.kind {
-                deepl_core::Provider::DeepL => ProviderJob::DeepL {
-                    slot_id: slot.id,
-                    source: slot.pair.source,
-                    target: slot.pair.target,
-                },
-                deepl_core::Provider::Ollama => ProviderJob::Ollama {
-                    slot_id: slot.id,
-                    source: slot.pair.source,
-                    target: slot.pair.target,
-                    model: slot.model.id().to_string(),
-                    register: slot.register,
-                    context: slot.context().map(str::to_string),
-                    sampling: slot.sampling(),
-                    count: slot.count(),
-                    parallel: self.prefs.parallel_for(slot.model),
-                },
-            })
-            .collect()
     }
 }

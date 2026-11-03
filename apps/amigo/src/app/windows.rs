@@ -1,13 +1,14 @@
 //! Opening dialog windows: creation, re-activation, and the `App::defer` rule
 //! that keeps a new window's first frame from reading a leased model.
 
+use deepl_core::Provider;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     px, Bounds, Context, Entity, Render, TitlebarOptions, Window, WindowBounds, WindowHandle,
     WindowOptions,
 };
 
-use super::{AppState, ConfirmAction, PromptAction};
+use super::{AppState, PromptAction};
 use crate::{dialogs, provider, settings};
 
 /// The name prompt and the confirmation share one small window size.
@@ -15,39 +16,17 @@ const DIALOG_SIZE: (f32, f32) = (360.0, 170.0);
 const DIALOG_MIN_SIZE: (f32, f32) = (320.0, 150.0);
 
 impl super::AmigoApp {
-    pub fn open_provider_dialog(&mut self, editing: Option<u64>, cx: &mut Context<Self>) {
+    /// Configure a provider. There is nothing to add: both providers always
+    /// exist, and this edits the one named.
+    pub fn open_provider_dialog(&mut self, provider: Provider, cx: &mut Context<Self>) {
         Self::open_dialog(
             cx,
             self.provider_window.as_ref(),
-            if editing.is_some() {
-                "Edit provider"
-            } else {
-                "Add provider"
-            },
+            format!("Configure {}", provider.label()),
             (470.0, 680.0),
             (430.0, 560.0),
             |app, handle| app.provider_window = Some(handle),
-            move |state, window, cx| provider::ProviderDialog::new(state, editing, window, cx),
-        );
-    }
-
-    pub fn open_provider_confirm(&mut self, id: u64, cx: &mut Context<Self>) {
-        let body = {
-            let state = self.state.read(cx);
-            match state.prefs().providers.iter().find(|slot| slot.id == id) {
-                Some(slot) => format!(
-                    "Remove the {} provider? Its results will be discarded.",
-                    slot.kind.label()
-                ),
-                None => "Remove this provider?".to_string(),
-            }
-        };
-
-        self.open_confirm(
-            "Remove provider",
-            body,
-            ConfirmAction::DeleteProvider(id),
-            cx,
+            move |state, window, cx| provider::ProviderDialog::new(state, provider, window, cx),
         );
     }
 
@@ -61,7 +40,7 @@ impl super::AmigoApp {
         Self::open_dialog(
             cx,
             self.prompt_window.as_ref(),
-            dialogs::prompt_title(action),
+            dialogs::prompt_title(action).to_string(),
             DIALOG_SIZE,
             DIALOG_MIN_SIZE,
             |app, handle| app.prompt_window = Some(handle),
@@ -71,45 +50,33 @@ impl super::AmigoApp {
         );
     }
 
+    /// Ask before deleting a preset: the only destructive action left.
     pub fn open_preset_confirm(&mut self, index: usize, cx: &mut Context<Self>) {
-        let body = {
+        let (title, body) = {
             let state = self.state.read(cx);
             match state.prefs().presets.get(index) {
-                Some(preset) => format!(
-                    "Delete \"{}\" and the {} provider{} it holds? The current providers stay as they are.",
-                    preset.name,
-                    preset.providers.len(),
-                    if preset.providers.len() == 1 { "" } else { "s" }
+                Some(preset) => (
+                    "Delete preset".to_string(),
+                    format!(
+                        "Delete \"{}\" and the {} provider{} it holds? The current providers stay as they are.",
+                        preset.name,
+                        preset.providers.len(),
+                        if preset.providers.len() == 1 { "" } else { "s" }
+                    ),
                 ),
-                None => "Delete this preset?".to_string(),
+                None => ("Delete preset".to_string(), "Delete this preset?".to_string()),
             }
         };
 
-        self.open_confirm(
-            "Delete preset",
-            body,
-            ConfirmAction::DeletePreset(index),
-            cx,
-        );
-    }
-
-    /// Open the shared confirmation window with a destructive action attached.
-    pub fn open_confirm(
-        &mut self,
-        title: &'static str,
-        body: String,
-        action: ConfirmAction,
-        cx: &mut Context<Self>,
-    ) {
         Self::open_dialog(
             cx,
             self.confirm_window.as_ref(),
-            title,
+            title.clone(),
             DIALOG_SIZE,
             DIALOG_MIN_SIZE,
             |app, handle| app.confirm_window = Some(handle),
             move |state, _window, cx| {
-                dialogs::ConfirmDialog::new(state, action, title.to_string(), body.clone(), cx)
+                dialogs::ConfirmDialog::new(state, index, title.clone(), body.clone(), cx)
             },
         );
     }
@@ -124,7 +91,7 @@ impl super::AmigoApp {
         Self::open_dialog(
             cx,
             self.settings_window.as_ref(),
-            "Settings",
+            "Settings".to_string(),
             (480.0, 620.0),
             (420.0, 560.0),
             |app, handle| app.settings_window = Some(handle),
@@ -140,7 +107,7 @@ impl super::AmigoApp {
     fn open_dialog<T: Render + 'static>(
         cx: &mut Context<Self>,
         existing: Option<&WindowHandle<T>>,
-        title: &'static str,
+        title: String,
         size: (f32, f32),
         min_size: (f32, f32),
         set: impl FnOnce(&mut super::AmigoApp, WindowHandle<T>) + 'static,
@@ -166,7 +133,7 @@ impl super::AmigoApp {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(gpui_kit::size(px(min_size.0), px(min_size.1))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some(title.into()),
+                        title: Some(title.clone().into()),
                         ..Default::default()
                     }),
                     ..Default::default()

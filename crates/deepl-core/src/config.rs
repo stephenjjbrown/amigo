@@ -25,11 +25,11 @@ pub enum TranslationMode {
     Multi,
 }
 
-/// One configured translation provider in the workspace. The app can hold any
-/// number of these, including several of the same kind.
+/// One provider's configuration. There is exactly one of these per [`Provider`]:
+/// providers are a fixed set, so a slot needs no identity of its own — the kind
+/// is the identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSlot {
-    pub id: u64,
     pub kind: Provider,
     #[serde(default)]
     pub pair: LangPair,
@@ -60,7 +60,6 @@ pub struct ProviderSlot {
 impl Default for ProviderSlot {
     fn default() -> Self {
         Self {
-            id: 0,
             kind: Provider::Ollama,
             pair: LangPair::default(),
             model: OllamaModel::default(),
@@ -77,9 +76,7 @@ impl Default for ProviderSlot {
 }
 
 impl ProviderSlot {
-    /// Whether two slots describe the same provider configuration. The `id` is
-    /// runtime identity — loading a preset re-keys it — so it is not part of the
-    /// comparison.
+    /// Whether two slots describe the same provider configuration.
     pub fn same_configuration(&self, other: &Self) -> bool {
         self.kind == other.kind
             && self.pair == other.pair
@@ -130,11 +127,12 @@ pub struct Preset {
 pub struct Preferences {
     #[serde(default)]
     pub providers: Vec<ProviderSlot>,
+    /// The provider in use, or `None` for the "Select Provider" state.
+    #[serde(default)]
+    pub selected_provider: Option<Provider>,
     /// Saved provider sets the user can switch between.
     #[serde(default)]
     pub presets: Vec<Preset>,
-    #[serde(default)]
-    pub next_slot_id: u64,
     #[serde(default)]
     pub verbose_logging: bool,
     #[serde(default = "default_local_parallel")]
@@ -161,12 +159,14 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            providers: vec![ProviderSlot {
-                id: 1,
-                kind: Provider::DeepL,
-                ..ProviderSlot::default()
-            }],
-            next_slot_id: 2,
+            providers: Provider::ALL
+                .iter()
+                .map(|kind| ProviderSlot {
+                    kind: *kind,
+                    ..ProviderSlot::default()
+                })
+                .collect(),
+            selected_provider: None,
             presets: Vec::new(),
             verbose_logging: false,
             local_parallel: default_local_parallel(),
@@ -182,44 +182,65 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    /// Rebuild the provider list from the pre-multi-provider layout.
+    /// Rebuild the providers from the pre-multi-provider layout when there are
+    /// none stored, then fold them into the fixed shape.
     pub fn migrate(&mut self) {
-        if !self.providers.is_empty() {
-            let highest = self.providers.iter().map(|slot| slot.id).max().unwrap_or(0);
-            if self.next_slot_id <= highest {
-                self.next_slot_id = highest + 1;
+        if self.providers.is_empty() {
+            self.providers = vec![
+                ProviderSlot {
+                    kind: Provider::DeepL,
+                    pair: self.legacy_deepl_pair,
+                    ..ProviderSlot::default()
+                },
+                ProviderSlot {
+                    kind: Provider::Ollama,
+                    pair: self.legacy_ollama_pair,
+                    model: self.legacy_ollama_model,
+                    register: self.legacy_register,
+                    ..ProviderSlot::default()
+                },
+            ];
+            if self.selected_provider.is_none() {
+                self.selected_provider = if self.legacy_deepl_enabled {
+                    Some(Provider::DeepL)
+                } else if self.legacy_ollama_enabled {
+                    Some(Provider::Ollama)
+                } else {
+                    None
+                };
             }
-            return;
         }
-
-        let mut providers = Vec::new();
-        if self.legacy_deepl_enabled {
-            providers.push(ProviderSlot {
-                id: providers.len() as u64 + 1,
-                kind: Provider::DeepL,
-                pair: self.legacy_deepl_pair,
-                ..ProviderSlot::default()
-            });
+        self.normalise();
+        // Presets were snapshots of the old free-form list. Fold them too, so a
+        // saved single-provider preset still compares equal to the fixed pair.
+        for preset in &mut self.presets {
+            preset.providers = fold(preset.providers.clone());
         }
-        if self.legacy_ollama_enabled {
-            providers.push(ProviderSlot {
-                id: providers.len() as u64 + 1,
-                kind: Provider::Ollama,
-                pair: self.legacy_ollama_pair,
-                model: self.legacy_ollama_model,
-                register: self.legacy_register,
-                ..ProviderSlot::default()
-            });
-        }
-
-        self.next_slot_id = providers.len() as u64 + 1;
-        self.providers = providers;
     }
 
-    pub fn allocate_slot_id(&mut self) -> u64 {
-        let id = self.next_slot_id.max(1);
-        self.next_slot_id = id + 1;
-        id
+    /// Exactly one configuration per kind, in `Provider::ALL` order. The first
+    /// entry of a kind wins; a missing kind gets a default, because both
+    /// providers are always on offer.
+    fn normalise(&mut self) {
+        self.providers = fold(std::mem::take(&mut self.providers));
+    }
+
+    /// The configuration of one provider.
+    pub fn slot(&self, kind: Provider) -> Option<&ProviderSlot> {
+        self.providers.iter().find(|slot| slot.kind == kind)
+    }
+
+    /// Replace the configuration of one provider.
+    pub fn set_slot(&mut self, slot: ProviderSlot) {
+        match self
+            .providers
+            .iter_mut()
+            .find(|stored| stored.kind == slot.kind)
+        {
+            Some(stored) => *stored = slot,
+            None => self.providers.push(slot),
+        }
+        self.normalise();
     }
 
     /// How many requests a model may have in flight at once.
@@ -236,7 +257,7 @@ impl Preferences {
     /// already has that name.
     pub fn save_preset(&mut self, name: &str) {
         let name = name.trim();
-        if name.is_empty() || self.providers.is_empty() {
+        if name.is_empty() {
             return;
         }
 
@@ -250,26 +271,17 @@ impl Preferences {
         }
     }
 
-    /// Replace the current providers with a preset's, re-keying their ids so they
-    /// cannot collide with outcomes or with each other.
+    /// Replace the current providers with a preset's, one per kind.
     pub fn apply_preset(&mut self, index: usize) -> bool {
         let Some(preset) = self.presets.get(index) else {
             return false;
         };
-        let providers = preset.providers.clone();
-        if providers.is_empty() {
+        if preset.providers.is_empty() {
             return false;
         }
 
-        self.providers = providers
-            .into_iter()
-            .enumerate()
-            .map(|(offset, mut slot)| {
-                slot.id = offset as u64 + 1;
-                slot
-            })
-            .collect();
-        self.next_slot_id = self.providers.len() as u64 + 1;
+        self.providers = preset.providers.clone();
+        self.normalise();
         true
     }
 
@@ -343,6 +355,24 @@ pub fn same_providers(left: &[ProviderSlot], right: &[ProviderSlot]) -> bool {
             .all(|(left, right)| left.same_configuration(right))
 }
 
+/// Fold any provider list into one configuration per kind, in `Provider::ALL`
+/// order. Shared by the live providers and by preset snapshots.
+fn fold(stored: Vec<ProviderSlot>) -> Vec<ProviderSlot> {
+    let mut remaining = stored;
+    Provider::ALL
+        .iter()
+        .map(
+            |kind| match remaining.iter().position(|slot| slot.kind == *kind) {
+                Some(index) => remaining.remove(index),
+                None => ProviderSlot {
+                    kind: *kind,
+                    ..ProviderSlot::default()
+                },
+            },
+        )
+        .collect()
+}
+
 pub fn config_path() -> PathBuf {
     crate::session_store::support_dir().join(CONFIG_FILE)
 }
@@ -391,11 +421,82 @@ mod tests {
     }
 
     #[test]
-    fn applying_a_preset_rekeys_provider_ids() {
+    fn applying_a_preset_restores_one_slot_per_kind() {
         let mut prefs = Preferences::default();
         prefs.save_preset("one");
+        prefs.set_slot(ProviderSlot {
+            kind: Provider::Ollama,
+            pair: LangPair::default(),
+            ..ProviderSlot::default()
+        });
         assert!(prefs.apply_preset(0));
-        assert_eq!(prefs.providers[0].id, 1);
-        assert_eq!(prefs.next_slot_id, 2);
+        assert_eq!(prefs.providers.len(), 2);
+        assert!(prefs.slot(Provider::Ollama).is_some());
+    }
+
+    #[test]
+    fn duplicate_kinds_fold_to_the_first() {
+        let mut prefs = Preferences {
+            providers: vec![
+                ProviderSlot {
+                    kind: Provider::Ollama,
+                    register: Register::Neutral,
+                    ..ProviderSlot::default()
+                },
+                ProviderSlot {
+                    kind: Provider::DeepL,
+                    ..ProviderSlot::default()
+                },
+                ProviderSlot {
+                    kind: Provider::Ollama,
+                    register: Register::Casual,
+                    ..ProviderSlot::default()
+                },
+            ],
+            ..Preferences::default()
+        };
+
+        prefs.migrate();
+
+        assert_eq!(prefs.providers.len(), 2);
+        assert_eq!(prefs.providers[0].kind, Provider::DeepL);
+        assert_eq!(
+            prefs.slot(Provider::Ollama).unwrap().register,
+            Register::Neutral
+        );
+    }
+
+    #[test]
+    fn a_missing_kind_gets_a_default_slot() {
+        let mut prefs = Preferences {
+            providers: vec![ProviderSlot {
+                kind: Provider::DeepL,
+                ..ProviderSlot::default()
+            }],
+            ..Preferences::default()
+        };
+
+        prefs.migrate();
+
+        assert_eq!(prefs.providers.len(), 2);
+        assert!(prefs.slot(Provider::Ollama).is_some());
+    }
+
+    #[test]
+    fn migration_folds_preset_snapshots_too() {
+        let mut prefs = Preferences {
+            presets: vec![Preset {
+                name: "old".to_string(),
+                providers: vec![ProviderSlot {
+                    kind: Provider::Ollama,
+                    ..ProviderSlot::default()
+                }],
+            }],
+            ..Preferences::default()
+        };
+
+        prefs.migrate();
+
+        assert_eq!(prefs.presets[0].providers.len(), 2);
     }
 }

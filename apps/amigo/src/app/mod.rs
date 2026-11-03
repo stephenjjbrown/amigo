@@ -20,11 +20,11 @@
 mod state;
 mod windows;
 
-pub use state::{AppEvent, AppState, ConfirmAction, PromptAction, SlotOutcome};
+pub use state::{AppEvent, AppState, PromptAction, SlotOutcome};
 
 use deepl_core::config::ProviderSlot;
 use deepl_core::diff::{self, DiffOp};
-use deepl_core::MAX_TRANSLATION_CHARS;
+use deepl_core::{Provider, MAX_TRANSLATION_CHARS};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -32,8 +32,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::WindowHandle;
 use gpui_kit::{
-    div, px, Context, Div, Entity, FontWeight, IntoElement, SharedString, Subscription, WeakEntity,
-    Window,
+    div, px, Context, Div, Entity, IntoElement, SharedString, Subscription, WeakEntity, Window,
 };
 
 use crate::dialogs;
@@ -99,7 +98,6 @@ impl AmigoApp {
     fn handle(&mut self, event: AppEvent, cx: &mut Context<Self>) {
         match event {
             AppEvent::ShowSettings => self.open_settings(cx),
-            AppEvent::ShowProviders => self.open_provider_dialog(None, cx),
         }
     }
 
@@ -108,9 +106,9 @@ impl AmigoApp {
         self.state.update(cx, |state, cx| state.translate(text, cx));
     }
 
-    fn copy(&mut self, slot_id: u64, index: usize, cx: &mut Context<Self>) {
+    fn copy(&mut self, provider: Provider, index: usize, cx: &mut Context<Self>) {
         self.state
-            .update(cx, |state, cx| state.copy(slot_id, index, cx));
+            .update(cx, |state, cx| state.copy(provider, index, cx));
     }
 
     fn preset_picker(&mut self, palette: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -181,7 +179,7 @@ impl AmigoApp {
             )
     }
 
-    fn header(&self, title: &str, badge: &str, palette: &Palette) -> Div {
+    fn header(&self, title: &str, badge: Option<&str>, palette: &Palette) -> Div {
         div()
             .flex()
             .items_center()
@@ -189,7 +187,7 @@ impl AmigoApp {
             .h(px(CONTROL_HEIGHT + 4.0))
             .px(px(14.))
             .child(ui::heading(title, palette.text))
-            .child(ui::badge(badge, palette))
+            .when_some(badge, |this, badge| this.child(ui::badge(badge, palette)))
     }
 
     fn source_pane(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
@@ -201,7 +199,7 @@ impl AmigoApp {
         );
 
         ui::panel(palette)
-            .child(self.header("Source", &badge, palette))
+            .child(self.header("Source", Some(&badge), palette))
             .child(ui::hairline(palette))
             .child(
                 div()
@@ -249,11 +247,10 @@ impl AmigoApp {
         let outcome = self
             .state
             .read(cx)
-            .outcome(slot.id)
+            .outcome(slot.kind)
             .cloned()
             .unwrap_or_default();
         let subtitle = slot_subtitle(slot);
-        let slot_id = slot.id;
         let current_text = self.source.read(cx).value().to_string();
         let stale = !outcome.translations.is_empty()
             && !outcome.source_text.is_empty()
@@ -272,17 +269,9 @@ impl AmigoApp {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                ui::text(slot_title(slot), TYPE.body, palette.text)
-                                    .font_weight(FontWeight::SEMIBOLD),
-                            )
-                            .child(ui::text(subtitle, TYPE.caption, palette.text_muted)),
-                    )
+                    // The pane header already names the provider; this row is its
+                    // model and mode, plus how the last result went.
+                    .child(ui::text(subtitle, TYPE.caption, palette.text_muted))
                     .child(div().flex_1())
                     .when_some(status, |this, (text, warning)| {
                         this.child(ui::text(
@@ -294,33 +283,7 @@ impl AmigoApp {
                                 palette.text_faint
                             },
                         ))
-                    })
-                    .child(
-                        ui::icon_button(
-                            &format!("edit-provider-{}", slot.id),
-                            "icons/sliders-horizontal.svg",
-                            "Edit provider",
-                            palette,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, _window, cx| {
-                                this.open_provider_dialog(Some(slot_id), cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        ui::icon_button(
-                            &format!("remove-provider-{}", slot.id),
-                            "icons/trash.svg",
-                            "Remove provider",
-                            palette,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, _window, cx| {
-                                this.open_provider_confirm(slot_id, cx);
-                            },
-                        )),
-                    ),
+                    }),
             )
             .child(self.result_body(slot, &outcome, palette, cx))
     }
@@ -343,12 +306,11 @@ impl AmigoApp {
 
         if outcome.translations.is_empty() && !configured {
             let message = match slot.kind {
-                deepl_core::Provider::DeepL => "Sign in with DeepL to use this provider.",
-                deepl_core::Provider::Ollama => {
+                Provider::DeepL => "Sign in with DeepL to use this provider.",
+                Provider::Ollama => {
                     "Start Ollama and choose an available model to use this provider."
                 }
             };
-            let slot_id = slot.id;
             return div()
                 .flex()
                 .flex_col()
@@ -356,7 +318,7 @@ impl AmigoApp {
                 .child(ui::text(message, TYPE.small, palette.text_muted))
                 .child(
                     ui::secondary_button(
-                        &format!("open-settings-{slot_id}"),
+                        &format!("open-settings-{}", slot.kind.settings_key()),
                         "Open settings",
                         palette,
                     )
@@ -373,7 +335,7 @@ impl AmigoApp {
             return ui::text(message, TYPE.small, palette.text_faint);
         }
 
-        let slot_id = slot.id;
+        let kind = slot.kind;
         let rows: Vec<Div> = if slot.diff_view && outcome.translations.len() > 1 {
             let samples: Vec<&str> = outcome.translations.iter().map(String::as_str).collect();
             let groups = diff::group(&samples);
@@ -390,7 +352,7 @@ impl AmigoApp {
                     // The medoid is the reference, so it is shown unedited.
                     let ops = (index != base).then(|| diff::diff(&tokens[base], &tokens[index]));
                     self.variant_row(
-                        slot_id,
+                        kind,
                         group.count,
                         index,
                         &group.text,
@@ -409,7 +371,7 @@ impl AmigoApp {
                 .enumerate()
                 .map(|(index, text)| {
                     self.variant_row(
-                        slot_id,
+                        kind,
                         1,
                         index,
                         text,
@@ -429,7 +391,7 @@ impl AmigoApp {
     #[allow(clippy::too_many_arguments)]
     fn variant_row(
         &mut self,
-        slot_id: u64,
+        provider: Provider,
         count: usize,
         index: usize,
         text: &str,
@@ -468,7 +430,7 @@ impl AmigoApp {
             }
         };
 
-        let id = format!("copy-{slot_id}-{index}");
+        let id = format!("copy-{}-{index}", provider.settings_key());
         let copy = if copied {
             ui::icon_button_tinted(&id, "icons/check.svg", "Copied", palette.success, palette)
         } else {
@@ -486,67 +448,62 @@ impl AmigoApp {
             .child(body)
             .child(
                 copy.on_click(
-                    cx.listener(move |this, _, _window, cx| this.copy(slot_id, index, cx)),
+                    cx.listener(move |this, _, _window, cx| this.copy(provider, index, cx)),
                 ),
             )
     }
 
     fn target_pane(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        let slots = self.state.read(cx).prefs().providers.clone();
-        let count = slots.len();
-        let badge = format!("{count} provider{}", if count == 1 { "" } else { "s" });
+        let (slots, selected) = {
+            let state = self.state.read(cx);
+            (state.prefs().providers.clone(), state.selected_provider())
+        };
 
-        let cards: Vec<Div> = slots
-            .iter()
-            .map(|slot| self.result_card(slot, palette, cx))
-            .collect();
+        let selected_slot = selected.and_then(|kind| slots.iter().find(|slot| slot.kind == kind));
 
-        let body = if cards.is_empty() {
-            div()
+        let body = match selected_slot {
+            Some(slot) => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.))
+                .child(self.result_card(slot, palette, cx)),
+            None => div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .gap(px(12.))
-                .text_size(px(TYPE.heading))
-                .text_color(palette.text_muted)
-                .child("No translation providers")
-                .child(
-                    ui::icon_text_button(
-                        "add-provider",
-                        "icons/plus.svg",
-                        "Add Translation Provider",
-                        palette,
-                    )
-                    .on_click(cx.listener(|this, _, _window, cx| {
-                        this.open_provider_dialog(None, cx);
-                    })),
-                )
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.))
-                .gap(px(8.))
-                .children(cards)
+                .gap(px(6.))
+                .child(ui::text(
+                    "Select a provider",
+                    TYPE.heading,
+                    palette.text_muted,
+                ))
+                .child(ui::text(
+                    "Choose DeepL or Ollama above to translate with it.",
+                    TYPE.small,
+                    palette.text_faint,
+                )),
         };
 
         let header = self
-            .header("Translations", &badge, palette)
+            .header("Translations", None, palette)
+            .child(self.provider_picker(&slots, selected))
             .child(div().flex_1())
-            .child(
-                ui::icon_text_button(
-                    "add-provider-header",
-                    "icons/plus.svg",
-                    "Add Translation Provider",
-                    palette,
+            .when_some(selected, |this, kind| {
+                this.child(
+                    ui::icon_button(
+                        "configure-provider",
+                        "icons/sliders-horizontal.svg",
+                        "Configure provider",
+                        palette,
+                    )
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.open_provider_dialog(kind, cx);
+                    })),
                 )
-                .on_click(cx.listener(|this, _, _window, cx| {
-                    this.open_provider_dialog(None, cx);
-                })),
-            );
+            });
 
         ui::panel(palette)
             .child(header)
@@ -562,13 +519,60 @@ impl AmigoApp {
             )
     }
 
+    /// The provider the pane is showing. Providers are a fixed pair, so this is a
+    /// choice between DeepL, Ollama, and the "Select Provider" state.
+    fn provider_picker(
+        &self,
+        slots: &[ProviderSlot],
+        selected: Option<Provider>,
+    ) -> impl IntoElement {
+        const NONE_LABEL: &str = "(Select Provider)";
+
+        let label = selected
+            .and_then(|kind| slots.iter().find(|slot| slot.kind == kind))
+            .map(slot_title)
+            .unwrap_or_else(|| NONE_LABEL.to_string());
+        let state = self.state.clone();
+
+        Button::new("provider-picker")
+            .small()
+            .w(px(260.))
+            .h(px(CONTROL_HEIGHT))
+            .dropdown_caret(true)
+            .label(SharedString::from(label))
+            .dropdown_menu(move |menu, _window, _cx| {
+                let mut menu = menu.item(
+                    PopupMenuItem::new(NONE_LABEL)
+                        .checked(selected.is_none())
+                        .on_click({
+                            let state = state.clone();
+                            move |_, _window, cx| {
+                                state.update(cx, |state, cx| state.select_provider(None, cx));
+                            }
+                        }),
+                );
+
+                for kind in Provider::ALL {
+                    let state = state.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(kind.label())
+                            .checked(selected == Some(kind))
+                            .on_click(move |_, _window, cx| {
+                                state.update(cx, |state, cx| state.select_provider(Some(kind), cx));
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
     fn action_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
         let text = self.source.read(cx).value().to_string();
-        let (has_providers, configured, translating) = {
+        let (selected, configured, translating) = {
             let state = self.state.read(cx);
             (
-                !state.prefs().providers.is_empty(),
-                state.all_configured(),
+                state.selected_provider(),
+                state.selected_configured(),
                 state.translating(),
             )
         };
@@ -577,10 +581,10 @@ impl AmigoApp {
             && text.chars().count() <= MAX_TRANSLATION_CHARS
             && !translating;
 
-        let (label, actionable) = if !has_providers {
-            ("Add a provider", true)
+        let (label, actionable) = if selected.is_none() {
+            ("Select a provider", false)
         } else if !configured {
-            ("Set up providers", true)
+            ("Set up provider", true)
         } else if translating {
             ("Translating…", false)
         } else {
@@ -594,7 +598,7 @@ impl AmigoApp {
             .w_full()
             .child(div().flex_1())
             .child(ui::text(
-                if !has_providers || !configured {
+                if selected.is_none() || !configured {
                     ""
                 } else if cfg!(target_os = "macos") {
                     "Cmd+Enter"

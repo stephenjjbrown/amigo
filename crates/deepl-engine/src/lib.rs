@@ -29,19 +29,18 @@ pub enum Command {
     Translate {
         request_id: u64,
         text: String,
-        jobs: Vec<ProviderJob>,
+        /// Exactly one provider is in play at a time, so a request is one job.
+        job: ProviderJob,
     },
 }
 
 #[derive(Debug, Clone)]
 pub enum ProviderJob {
     DeepL {
-        slot_id: u64,
         source: Language,
         target: Language,
     },
     Ollama {
-        slot_id: u64,
         source: Language,
         target: Language,
         model: String,
@@ -64,7 +63,6 @@ pub enum Event {
     OllamaStatus(Result<OllamaStatus, ApiError>),
     ProviderTranslation {
         request_id: u64,
-        slot_id: u64,
         provider: Provider,
         result: Result<Vec<Translation>, ApiError>,
         elapsed_ms: u128,
@@ -194,75 +192,64 @@ impl Worker {
             Command::Translate {
                 request_id,
                 text,
-                jobs,
+                job,
             } => {
                 log::info!(
-                    "translate request {request_id}: {} provider(s), {} chars",
-                    jobs.len(),
+                    "translate request {request_id}: {} chars",
                     text.chars().count()
                 );
 
-                for job in jobs {
-                    let started = Instant::now();
-                    let (slot_id, provider, result) = match job {
-                        ProviderJob::DeepL {
-                            slot_id,
+                let started = Instant::now();
+                let (provider, result) = match job {
+                    ProviderJob::DeepL { source, target } => (
+                        Provider::DeepL,
+                        self.translate_deepl(&text, source, target)
+                            .map(|translation| vec![translation]),
+                    ),
+                    ProviderJob::Ollama {
+                        source,
+                        target,
+                        model,
+                        register,
+                        context,
+                        sampling,
+                        count,
+                        parallel,
+                    } => (
+                        Provider::Ollama,
+                        self.translate_ollama(
+                            &text,
                             source,
                             target,
-                        } => (
-                            slot_id,
-                            Provider::DeepL,
-                            self.translate_deepl(&text, source, target)
-                                .map(|translation| vec![translation]),
-                        ),
-                        ProviderJob::Ollama {
-                            slot_id,
-                            source,
-                            target,
-                            model,
+                            &model,
                             register,
-                            context,
+                            context.as_deref(),
                             sampling,
                             count,
                             parallel,
-                        } => (
-                            slot_id,
-                            Provider::Ollama,
-                            self.translate_ollama(
-                                &text,
-                                source,
-                                target,
-                                &model,
-                                register,
-                                context.as_deref(),
-                                sampling,
-                                count,
-                                parallel,
-                            ),
                         ),
-                    };
-                    let elapsed_ms = started.elapsed().as_millis();
+                    ),
+                };
+                let elapsed_ms = started.elapsed().as_millis();
 
-                    match &result {
-                        Ok(translations) => log::info!(
-                            "{} translation for request {request_id} (slot {slot_id}) succeeded in {elapsed_ms}ms: {} variant(s)",
-                            provider.label(),
-                            translations.len()
-                        ),
-                        Err(error) => log::warn!(
-                            "{} translation for request {request_id} (slot {slot_id}) failed in {elapsed_ms}ms: {error}",
-                            provider.label()
-                        ),
-                    }
-
-                    let _ = events.send_blocking(Event::ProviderTranslation {
-                        request_id,
-                        slot_id,
-                        provider,
-                        result,
-                        elapsed_ms,
-                    });
+                match &result {
+                    Ok(translations) => log::info!(
+                        "{} translation for request {request_id} succeeded in {elapsed_ms}ms: {} variant(s)",
+                        provider.label(),
+                        translations.len()
+                    ),
+                    Err(error) => log::warn!(
+                        "{} translation for request {request_id} failed in {elapsed_ms}ms: {error}",
+                        provider.label()
+                    ),
                 }
+
+                let _ = events.send_blocking(Event::ProviderTranslation {
+                    request_id,
+                    provider,
+                    result,
+                    elapsed_ms,
+                });
             }
         }
     }

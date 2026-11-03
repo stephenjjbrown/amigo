@@ -26,8 +26,6 @@ type Choice<T> = (T, SharedString, bool);
 
 pub struct ProviderDialog {
     state: Entity<AppState>,
-    /// `None` while adding, `Some(id)` while editing an existing slot.
-    editing: Option<u64>,
     draft: ProviderSlot,
     /// The context hint, kept in an input entity while the dialog is open.
     context: Entity<InputState>,
@@ -38,20 +36,19 @@ pub struct ProviderDialog {
 impl ProviderDialog {
     pub fn new(
         state: Entity<AppState>,
-        editing: Option<u64>,
+        provider: Provider,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let draft = {
-            let state = state.read(cx);
-            match editing.and_then(|id| state.prefs().providers.iter().find(|slot| slot.id == id)) {
-                Some(slot) => slot.clone(),
-                None => ProviderSlot {
-                    kind: Provider::DeepL,
-                    ..ProviderSlot::default()
-                },
-            }
-        };
+        let draft = state
+            .read(cx)
+            .prefs()
+            .slot(provider)
+            .cloned()
+            .unwrap_or(ProviderSlot {
+                kind: provider,
+                ..ProviderSlot::default()
+            });
         let context = {
             let hint = draft.context.clone();
             cx.new(|cx| {
@@ -82,7 +79,6 @@ impl ProviderDialog {
 
         Self {
             state,
-            editing,
             draft,
             context,
             temperature,
@@ -374,23 +370,15 @@ impl ProviderDialog {
     fn footer(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
         ui::footer()
             .child(
-                ui::primary_button(
-                    "provider-save",
-                    if self.editing.is_some() {
-                        "Save"
-                    } else {
-                        "Add provider"
+                ui::primary_button("provider-save", "Save", true, palette).on_click(cx.listener(
+                    |this, _, window, cx| {
+                        let mut draft = this.draft.clone();
+                        draft.context = this.context.read(cx).value().to_string();
+                        let state = this.state.clone();
+                        state.update(cx, |state, cx| state.save_provider(draft, cx));
+                        window.remove_window();
                     },
-                    true,
-                    palette,
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    let mut draft = this.draft.clone();
-                    draft.context = this.context.read(cx).value().to_string();
-                    let state = this.state.clone();
-                    state.update(cx, |state, cx| state.save_provider(draft, cx));
-                    window.remove_window();
-                })),
+                )),
             )
             .child(
                 ui::secondary_button("provider-cancel", "Cancel", palette)
@@ -402,35 +390,11 @@ impl ProviderDialog {
 impl Render for ProviderDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::for_appearance(window.appearance());
+        // The provider is fixed when the window opens: configuring DeepL never
+        // edits Ollama, so there is no kind switcher here.
         let kind = self.draft.kind;
 
         ui::dialog_root(&palette)
-            // Provider kind, as the old app's tab bar.
-            .child(ui::tab_bar(
-                "kind",
-                &["DeepL", "Ollama"],
-                if kind == Provider::DeepL { 0 } else { 1 },
-                &palette,
-                {
-                    let weak = cx.weak_entity();
-                    move |index, _window, cx| {
-                        let next = if index == 0 {
-                            Provider::DeepL
-                        } else {
-                            Provider::Ollama
-                        };
-                        let _ = weak.update(cx, |dialog, cx| {
-                            dialog.draft.kind = next;
-                            dialog.draft.pair.target = target_for_source_with(
-                                next,
-                                dialog.draft.pair.source,
-                                dialog.draft.pair.target,
-                            );
-                            cx.notify();
-                        });
-                    }
-                },
-            ))
             .child(self.language_section(&palette, cx))
             .when(kind == Provider::Ollama, |this| {
                 this.child(self.ollama_section(&palette, cx))

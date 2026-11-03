@@ -361,59 +361,6 @@ pub fn segmented(
     group
 }
 
-/// A tab bar: labels over a full-width rule with an accent indicator under the
-/// selected tab — the old app's dialog tabs.
-pub fn tab_bar(
-    id_prefix: &str,
-    options: &[&str],
-    selected: usize,
-    palette: &Palette,
-    on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
-) -> Div {
-    let on_select = Rc::new(on_select);
-    let mut tabs = div().flex().items_end().gap(px(16.)).w_full();
-
-    for (index, label) in options.iter().enumerate() {
-        let is_selected = index == selected;
-        let on_select = on_select.clone();
-        let tab = div()
-            .id(SharedString::from(format!("{id_prefix}-{index}")))
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .pb(px(2.))
-            .cursor_pointer()
-            .text_size(px(TYPE.body))
-            .text_color(if is_selected {
-                palette.text
-            } else {
-                palette.text_muted
-            })
-            .when(!is_selected, |this| {
-                this.hover(move |style| style.text_color(palette.text))
-            })
-            .child(SharedString::from(*label))
-            // Only the selected tab draws an indicator; the row's hairline is the
-            // only rule under the inactive ones.
-            .child(
-                div()
-                    .h(px(2.))
-                    .w_full()
-                    .rounded(px(1.))
-                    .when(is_selected, |this| this.bg(palette.accent)),
-            )
-            .on_click(move |_, window, cx| on_select(index, window, cx));
-        tabs = tabs.child(tab);
-    }
-
-    div()
-        .flex()
-        .flex_col()
-        .w_full()
-        .child(tabs)
-        .child(hairline(palette))
-}
-
 /// Text at a type-scale size in an explicit colour. The family comes from the
 /// window root, so call sites never restate it.
 pub fn text(content: impl Into<SharedString>, size: f32, color: Rgba) -> Div {

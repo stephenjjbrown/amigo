@@ -10,7 +10,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, App, Context, Entity, IntoElement, Window};
 
-use crate::app::{AppState, ConfirmAction, PromptAction};
+use crate::app::{AppState, PromptAction};
 use crate::theme::{Palette, TYPE};
 use crate::ui;
 
@@ -121,9 +121,10 @@ impl Render for PromptDialog {
     }
 }
 
+/// Confirmation for the one destructive action left: deleting a preset.
 pub struct ConfirmDialog {
     state: Entity<AppState>,
-    action: ConfirmAction,
+    preset: usize,
     title: String,
     body: String,
 }
@@ -131,14 +132,14 @@ pub struct ConfirmDialog {
 impl ConfirmDialog {
     pub fn new(
         state: Entity<AppState>,
-        action: ConfirmAction,
+        preset: usize,
         title: String,
         body: String,
         _cx: &mut Context<Self>,
     ) -> Self {
         Self {
             state,
-            action,
+            preset,
             title,
             body,
         }
@@ -162,9 +163,9 @@ impl Render for ConfirmDialog {
                     .child(
                         ui::danger_button("confirm-delete", "Delete", &palette).on_click(
                             cx.listener(|this, _, window, cx| {
-                                let action = this.action;
+                                let preset = this.preset;
                                 let state = this.state.clone();
-                                state.update(cx, |state, cx| state.confirm(action, cx));
+                                state.update(cx, |state, cx| state.delete_preset(preset, cx));
                                 window.remove_window();
                             }),
                         ),
