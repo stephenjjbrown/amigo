@@ -65,11 +65,24 @@ configuration and the last 500 log lines.
 ## Project layout
 
 ```text
-apps/amigo            GPUI application: windows, panes, dialogs, theme
+apps/amigo            GPUI application: AppState model, views, theme
 crates/deepl-engine   worker thread: provider jobs, OAuth lifecycle, validation
 crates/deepl-core     UI-agnostic: MCP client, OAuth, Ollama, pairs, config, diff
 scripts/              icons and the macOS bundle
 ```
+
+## How it fits together
+
+The engine runs on its own thread and reports over an async channel; the UI
+awaits those events, so nothing polls and the UI thread never waits on the
+network or on the browser sign-in.
+
+`AppState` (`apps/amigo/src/app/state.rs`) owns the engine, preferences, session
+and results, and implements no rendering at all. Views hold it, read it while
+rendering, and call commands on it to change anything. GPUI repaints a view when
+an entity it read notifies, so every open window stays in sync without
+observers; the one subscription is the main view reacting to the state events
+that ask for a window to open (sign-in, provider setup).
 
 ## Tests
 

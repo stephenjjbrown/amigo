@@ -53,6 +53,15 @@ time to discover, so they don't have to be rediscovered.
   rather than layering a second hover on a shared recipe.
 - `Theme::update(cx, |theme| ...)` is what reconciles the theme's derived
   tokens with `theme.colors`. Assigning through `Theme::global_mut` skips that.
+- **Reacting: `notify` is the whole mechanism.** GPUI records which entities a
+  view reads while rendering and repaints that view when any of them notifies.
+  So a view needs **no `cx.observe` merely to stay current** — an open Settings
+  window updates when the state changes because it read the state. `cx.observe`
+  and `cx.subscribe` are for *side effects* (open a window, log, write a file).
+  The one subscription in this app is `AmigoApp` reacting to `AppEvent`.
+  There is no automatic change detection: mutating state without `cx.notify()`
+  leaves the UI stale. Reads inside listeners create no dependency; only reads
+  during render do.
 
 ### gpui-component 0.8 specifics
 
@@ -67,14 +76,16 @@ time to discover, so they don't have to be rediscovered.
   `Slider` and `Switch` live under `component::checkbox|slider|switch`, and
   `Tooltip` under `component::tooltip`.
 - `InputState`, `TextareaState` and `SliderState` are entities: construct with
-  `cx.new(|cx| ...)`, observe them to repaint, read values back on submit.
+  `cx.new(|cx| ...)` and read values back on submit. They notify themselves when
+  they change, so a view that reads one repaints without an observer.
 - `ThemeColor` is `#[non_exhaustive]` — assign field by field (with
   `#[allow(clippy::field_reassign_with_default)]`), never as a struct literal.
 
 ## App structure
 
 ```text
-apps/amigo/src/app/mod.rs      state, engine polling, panes and cards
+apps/amigo/src/app/state.rs    AppState: the model (engine, prefs, results). No Render.
+apps/amigo/src/app/mod.rs      the main window: panes, cards, action bar
 apps/amigo/src/app/windows.rs  open_dialog + dialog launchers (App::defer rule)
 apps/amigo/src/settings.rs     Settings window
 apps/amigo/src/provider.rs     Add/Edit provider window
@@ -86,6 +97,29 @@ apps/amigo/src/assets.rs       AssetSource over assets/icons/*.svg
 crates/deepl-core/src/config.rs  Preferences, ProviderSlot, Preset, JSON I/O
 crates/deepl-core/src/diff.rs    word-level diff used by the result cards
 ```
+
+## State and views
+
+- One model, `AppState` (`app/state.rs`), owns the engine, preferences, session,
+  Ollama status and results. It implements **no `Render`** and holds **no window
+  handles**, so it cannot depend on a view.
+- Views hold `Entity<AppState>` and read it during render; they never hold a
+  second copy of its data. Window handles live on `AmigoApp` because they belong
+  to the view layer.
+- State changes are commands (`sign_in`, `save_provider`, `load_preset`, …).
+  Views call them with `state.update(cx, |state, cx| ...)`.
+- When state needs something only a view can do — opening a window — it emits
+  `AppEvent` and `AmigoApp` handles it in `subscribe`. Do not add a window handle
+  or an `open_*` call to state.
+- Keep `cx.notify()` at the end of every command that mutates. It is what
+  repaints every window showing the state.
+- The engine delivers events over an `async_channel`; `AppState::new` awaits
+  `engine.events()` in one `cx.spawn` task and calls `handle` per event. **Do not
+  reintroduce a polling timer.** The engine owns no UI knowledge and takes no
+  repaint callback.
+- Reading `AmigoApp` while it is being updated panics (`cannot read … while it is
+  already being updated`). Inside `open_dialog` that read must sit **inside** the
+  `cx.defer` closure, not before it.
 
 ## Design conventions
 
