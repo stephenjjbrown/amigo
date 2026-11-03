@@ -1,35 +1,40 @@
 //! The main window: source pane, provider results and the action bar.
 //!
+//! ## State and views
+//!
+//! [`AppState`] owns the model and implements no `Render`. This view reads it and
+//! sends it commands. GPUI repaints any view that read an entity when that
+//! entity notifies, so no view has to observe the state to stay current; the one
+//! subscription below exists for a side effect (opening a window), not to
+//! repaint.
+//!
 //! ## Opening windows
 //!
-//! A window opened while this view is mid-update (a listener, a render, a
+//! A window opened while a view is mid-update (a listener, a render, a
 //! `Context::defer_in`, `Context::on_next_frame`) panics: GPUI renders the new
-//! window immediately, and its view reads this one, which is still leased.
+//! window immediately, and its view reads the state, which is still leased.
 //! Create windows inside `App::defer` instead — it runs after the effect cycle
-//! with a bare `&mut App`, so no view is on the stack. `AmigoApp::open_settings`
-//! is the reference implementation.
+//! with a bare `&mut App`, so no view is on the stack.
+//! `app/windows.rs::open_dialog` is the reference implementation.
 
+mod state;
 mod windows;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+pub use state::{AppEvent, AppState, ConfirmAction, PromptAction, SlotOutcome};
 
-use deepl_core::config::{Preferences, ProviderSlot};
+use deepl_core::config::ProviderSlot;
 use deepl_core::diff::{self, DiffOp};
-use deepl_core::{SessionStatus, MAX_PARALLEL_LIMIT, MAX_TRANSLATION_CHARS};
-use deepl_engine::{Command, Engine, Event, ProviderJob};
+use deepl_core::MAX_TRANSLATION_CHARS;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Textarea, TextareaState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::WindowHandle;
 use gpui_kit::{
-    div, px, App, ClipboardItem, Context, Div, Entity, FontWeight, IntoElement, SharedString,
-    WeakEntity, Window,
+    div, px, Context, Div, Entity, FontWeight, IntoElement, SharedString, Subscription, WeakEntity,
+    Window,
 };
-
-use gpui_kit::component::button::Button;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::Sizable as _;
 
 use crate::dialogs;
 use crate::format::{slot_subtitle, slot_title};
@@ -40,48 +45,12 @@ use crate::ui;
 
 gpui_kit::actions!(amigo, [TranslateAction, OpenSettingsAction]);
 
-/// What a provider slot last returned.
-#[derive(Clone, Default)]
-struct SlotOutcome {
-    /// One entry per sample, in the order the model produced them.
-    translations: Vec<String>,
-    error: Option<String>,
-    elapsed_ms: Option<u128>,
-    /// Row the user last copied, so the button can show a tick.
-    copied: Option<usize>,
-    /// The source text this result was produced from.
-    source_text: String,
-}
-
-/// Everything the settings window renders, copied out of the main view.
-pub struct SettingsSnapshot {
-    pub signed_in: bool,
-    pub signing_in: bool,
-    pub auth_error: Option<String>,
-    pub ollama_running: bool,
-    pub supported_models: usize,
-    pub ollama_checking: bool,
-    pub ollama_error: Option<String>,
-    pub local_parallel: usize,
-    pub cloud_parallel: usize,
-    pub verbose_logging: bool,
-}
-
 pub struct AmigoApp {
-    /// The source text, owned by gpui-component's multi-line input.
+    /// The model. Everything about the app that is not layout lives here.
+    state: Entity<AppState>,
+    /// The source text, owned by gpui-component's multi-line input. It belongs to
+    /// the view: the text is an input, and state receives it on Translate.
     source: Entity<TextareaState>,
-    engine: Engine,
-    pub(crate) prefs: Preferences,
-    /// Set while a batch is in flight, so the button can read "Translating…".
-    translating: bool,
-    next_request: u64,
-    outcomes: HashMap<u64, SlotOutcome>,
-    /// DeepL session state, as last reported by the engine.
-    session: Option<SessionStatus>,
-    signing_in: bool,
-    auth_error: Option<String>,
-    /// Index of the preset the providers came from, for the "(Modified)" marker.
-    active_preset: Option<usize>,
     /// The settings window, if this app opened one.
     settings_window: Option<WindowHandle<settings::SettingsView>>,
     /// The preset name prompt, if open.
@@ -90,15 +59,8 @@ pub struct AmigoApp {
     confirm_window: Option<WindowHandle<dialogs::ConfirmDialog>>,
     /// The provider dialog, if open.
     provider_window: Option<WindowHandle<provider::ProviderDialog>>,
-    /// The text the in-flight batch was sent with, stamped onto its results.
-    pending_text: String,
-    /// Engine-level failure shown as a banner above the action bar.
-    global_error: Option<String>,
-    /// Whether the first-launch settings prompt has been shown.
-    onboarded: bool,
-    pub(crate) ollama: Option<deepl_core::OllamaStatus>,
-    ollama_error: Option<String>,
-    ollama_checking: bool,
+    /// Kept alive so the state subscription stays active.
+    _subscriptions: Vec<Subscription>,
 }
 
 impl AmigoApp {
@@ -109,352 +71,60 @@ impl AmigoApp {
             gpui_kit::KeyBinding::new("cmd-,", OpenSettingsAction, Some("Amigo")),
         ]);
 
-        let engine = Engine::spawn(Arc::new(|| {}));
-        engine.send(Command::LoadSession);
-        engine.send(Command::LoadOllamaStatus);
-
+        let state = cx.new(AppState::new);
         let source = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Type or paste text to translate…")
                 .rows(12)
         });
 
-        // The engine reports on its own thread; poll it and repaint on change.
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(80))
-                    .await;
-
-                let alive = this.update(cx, |app, cx| {
-                    let mut changed = false;
-                    let pending = app.pending_text.clone();
-                    while let Some(event) = app.engine.try_recv() {
-                        match event {
-                            Event::ProviderTranslation {
-                                slot_id,
-                                result,
-                                elapsed_ms,
-                                ..
-                            } => {
-                                app.outcomes.insert(
-                                    slot_id,
-                                    match result {
-                                        Ok(translations) => SlotOutcome {
-                                            translations: translations
-                                                .into_iter()
-                                                .map(|translation| translation.text)
-                                                .collect(),
-                                            error: None,
-                                            elapsed_ms: Some(elapsed_ms),
-                                            copied: None,
-                                            source_text: pending.clone(),
-                                        },
-                                        Err(error) => SlotOutcome {
-                                            translations: Vec::new(),
-                                            error: Some(error.message),
-                                            elapsed_ms: Some(elapsed_ms),
-                                            copied: None,
-                                            source_text: pending.clone(),
-                                        },
-                                    },
-                                );
-                                changed = true;
-                            }
-                            Event::SessionLoaded(result) => {
-                                match result {
-                                    Ok(status) => {
-                                        app.session = Some(status);
-                                        if !status.signed_in && !app.onboarded {
-                                            app.onboarded = true;
-                                            app.open_settings(cx);
-                                        }
-                                    }
-                                    Err(error) => app.auth_error = Some(error.message),
-                                }
-                                changed = true;
-                            }
-                            Event::SignInStarted => {
-                                app.signing_in = true;
-                                app.auth_error = None;
-                                changed = true;
-                            }
-                            Event::SignedIn(result) => {
-                                app.signing_in = false;
-                                match result {
-                                    Ok(status) => {
-                                        app.session = Some(status);
-                                        app.auth_error = None;
-                                    }
-                                    Err(error) => {
-                                        // A cancelled sign-in is not an error worth showing.
-                                        if error.kind != deepl_core::ErrorKind::Cancelled {
-                                            app.auth_error = Some(error.message);
-                                        }
-                                    }
-                                }
-                                changed = true;
-                            }
-                            Event::SignedOut(result) => {
-                                app.signing_in = false;
-                                app.translating = false;
-                                app.outcomes.clear();
-                                match result {
-                                    Ok(status) => app.session = Some(status),
-                                    Err(error) => app.auth_error = Some(error.message),
-                                }
-                                changed = true;
-                            }
-                            Event::OllamaStatus(result) => {
-                                app.ollama_checking = false;
-                                match result {
-                                    Ok(status) => {
-                                        app.ollama = Some(status);
-                                        app.ollama_error = None;
-                                    }
-                                    Err(error) => {
-                                        app.ollama = Some(deepl_core::OllamaStatus::not_running());
-                                        app.ollama_error = Some(error.message);
-                                    }
-                                }
-                                changed = true;
-                            }
-                            Event::Fatal(error) => {
-                                app.translating = false;
-                                app.global_error = Some(error.message);
-                                changed = true;
-                            }
-                        }
-                    }
-
-                    // The batch is done once every configured slot has an outcome.
-                    if app.translating
-                        && app
-                            .prefs
-                            .providers
-                            .iter()
-                            .all(|slot| app.outcomes.contains_key(&slot.id))
-                    {
-                        app.translating = false;
-                        changed = true;
-                    }
-
-                    if changed {
-                        cx.notify();
-                    }
-                });
-
-                if alive.is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-
-        let prefs = Preferences::load();
-        // If the saved providers came from a preset, show it as loaded.
-        let active_preset = (0..prefs.presets.len()).find(|&index| prefs.matches_preset(index));
+        // State cannot open a window, so it emits an event and this view acts on
+        // it. This is the only subscription in the app.
+        let subscriptions =
+            vec![cx.subscribe(&state, |this, _state, event, cx| this.handle(*event, cx))];
 
         Self {
+            state,
             source,
-            engine,
-            prefs,
-            translating: false,
-            next_request: 0,
-            outcomes: HashMap::new(),
-            session: None,
-            signing_in: false,
-            auth_error: None,
-            active_preset,
             settings_window: None,
             prompt_window: None,
             confirm_window: None,
             provider_window: None,
-            pending_text: String::new(),
-            global_error: None,
-            onboarded: false,
-            ollama: None,
-            ollama_error: None,
-            ollama_checking: false,
+            _subscriptions: subscriptions,
         }
     }
 
-    fn signed_in(&self) -> bool {
-        self.session.map(|status| status.signed_in).unwrap_or(false)
-    }
-
-    pub fn diagnostics_text(&self) -> String {
-        let mut text = String::new();
-        text.push_str(&format!("Amigo {}\n", env!("CARGO_PKG_VERSION")));
-        text.push_str(&format!(
-            "OS: {} {}\n",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        ));
-        text.push_str(&format!(
-            "Providers: {} configured; DeepL signed_in={}; Ollama running={:?}\n",
-            self.prefs.providers.len(),
-            self.signed_in(),
-            self.ollama.as_ref().map(|status| status.running)
-        ));
-        for slot in &self.prefs.providers {
-            match slot.kind {
-                deepl_core::Provider::DeepL => text.push_str(&format!(
-                    "  - #{} DeepL {} -> {}\n",
-                    slot.id,
-                    slot.pair.source.code(),
-                    slot.pair.target.code()
-                )),
-                deepl_core::Provider::Ollama => text.push_str(&format!(
-                    "  - #{} Ollama {} -> {} model={} mode={:?} variants={} temperature={} top_p={} register={:?}\n",
-                    slot.id,
-                    slot.pair.source.code(),
-                    slot.pair.target.code(),
-                    slot.model.id(),
-                    slot.mode,
-                    slot.variants,
-                    slot.temperature,
-                    slot.top_p,
-                    slot.register
-                )),
-            }
-        }
-        text.push_str(&format!(
-            "Log file: {}\n",
-            crate::logging::log_path().display()
-        ));
-        text.push_str(&format!(
-            "Session file: {}\n",
-            deepl_core::session_store::session_file_path().display()
-        ));
-        text.push_str("\nRecent log:\n");
-
-        let log = crate::logging::recent_log();
-        if log.is_empty() {
-            text.push_str("(no log entries)");
-        } else {
-            text.push_str(&log);
-        }
-
-        text
-    }
-
-    /// What the picker reads: the loaded preset, marked when the providers have
-    /// drifted from it, or a placeholder when none is loaded.
-    fn preset_label(&self) -> String {
-        let Some(index) = self.active_preset else {
-            return "Select Preset…".to_string();
-        };
-        let Some(preset) = self.prefs.presets.get(index) else {
-            return "Select Preset…".to_string();
-        };
-        if self.prefs.matches_preset(index) {
-            preset.name.clone()
-        } else {
-            format!("{} (Modified)", preset.name)
+    /// Act on what the state asked for: the only place a state change opens a
+    /// window.
+    fn handle(&mut self, event: AppEvent, cx: &mut Context<Self>) {
+        match event {
+            AppEvent::ShowSettings => self.open_settings(cx),
+            AppEvent::ShowProviders => self.open_provider_dialog(None, cx),
         }
     }
 
-    /// Carry out a confirmed destructive action.
-    pub fn confirm(&mut self, action: dialogs::ConfirmAction, cx: &mut Context<Self>) {
-        match action {
-            dialogs::ConfirmAction::DeletePreset(index) => self.delete_preset(index, cx),
-            dialogs::ConfirmAction::DeleteProvider(id) => self.remove_provider(id, cx),
-        }
+    fn translate(&mut self, cx: &mut Context<Self>) {
+        let text = self.source.read(cx).value().to_string();
+        self.state.update(cx, |state, cx| state.translate(text, cx));
     }
 
-    pub fn save_provider(&mut self, mut draft: ProviderSlot, cx: &mut Context<Self>) {
-        if draft.id == 0 {
-            draft.id = self.prefs.allocate_slot_id();
-            self.prefs.providers.push(draft);
-        } else if let Some(slot) = self
-            .prefs
-            .providers
-            .iter_mut()
-            .find(|slot| slot.id == draft.id)
-        {
-            *slot = draft;
-        }
-
-        self.outcomes.clear();
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn remove_provider(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.prefs.providers.retain(|slot| slot.id != id);
-        self.outcomes.remove(&id);
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn preset_name_taken(&self, name: &str, except: Option<usize>) -> bool {
-        self.prefs
-            .presets
-            .iter()
-            .enumerate()
-            .any(|(index, preset)| Some(index) != except && preset.name == name)
-    }
-
-    pub fn save_preset_named(&mut self, name: &str, cx: &mut Context<Self>) {
-        self.prefs.save_preset(name);
-        self.active_preset = self
-            .prefs
-            .presets
-            .iter()
-            .position(|preset| preset.name == name.trim());
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn rename_preset_named(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
-        if self.prefs.rename_preset(index, name) {
-            self.prefs.save();
-            cx.notify();
-        }
-    }
-
-    pub fn delete_preset(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.prefs.delete_preset(index);
-        self.active_preset = match self.active_preset {
-            Some(active) if active == index => None,
-            Some(active) if active > index => Some(active - 1),
-            other => other,
-        };
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn load_preset(&mut self, index: usize, cx: &mut Context<Self>) {
-        if !self.prefs.apply_preset(index) {
-            return;
-        }
-        self.active_preset = Some(index);
-        self.outcomes.clear();
-        self.prefs.save();
-        cx.notify();
+    fn copy(&mut self, slot_id: u64, index: usize, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, cx| state.copy(slot_id, index, cx));
     }
 
     fn preset_picker(&mut self, palette: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let presets: Vec<(usize, String)> = self
-            .prefs
-            .presets
-            .iter()
-            .enumerate()
-            .map(|(index, preset)| {
-                let drifted =
-                    self.active_preset == Some(index) && !self.prefs.matches_preset(index);
-                let label = if drifted {
-                    format!("{} (Modified)", preset.name)
-                } else {
-                    preset.name.clone()
-                };
-                (index, label)
-            })
-            .collect();
-        let active = self.active_preset;
+        let (presets, active, label) = {
+            let state = self.state.read(cx);
+            (
+                state.preset_choices(),
+                state.active_preset(),
+                state.preset_label(),
+            )
+        };
         let palette = *palette;
         let weak = cx.weak_entity();
+        let presets_entity = self.state.clone();
 
         Button::new("preset-picker")
             // `small()` gives compact type; the height is pinned to the control
@@ -464,10 +134,11 @@ impl AmigoApp {
             .h(px(CONTROL_HEIGHT))
             // Puts the label at the start and a caret at the end.
             .dropdown_caret(true)
-            .label(SharedString::from(self.preset_label()))
+            .label(SharedString::from(label))
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu;
                 let weak = weak.clone();
+                let presets_entity = presets_entity.clone();
 
                 if presets.is_empty() {
                     menu = menu.item(PopupMenuItem::new("No saved presets").disabled(true));
@@ -478,167 +149,14 @@ impl AmigoApp {
                     let label = label.clone();
                     let is_active = active == Some(index);
                     let weak = weak.clone();
+                    let presets_entity = presets_entity.clone();
 
                     menu = menu.item(PopupMenuItem::element(move |_window, _cx| {
-                        preset_row(index, &label, is_active, &weak, &palette)
+                        preset_row(index, &label, is_active, &weak, &presets_entity, &palette)
                     }));
                 }
                 menu
             })
-    }
-
-    /// Whether a slot can actually translate right now: DeepL needs a session,
-    /// Ollama needs its model available.
-    fn slot_configured(&self, slot: &ProviderSlot) -> bool {
-        match slot.kind {
-            deepl_core::Provider::DeepL => self.signed_in(),
-            deepl_core::Provider::Ollama => self
-                .ollama
-                .as_ref()
-                .map(|status| status.can_use(slot.model))
-                .unwrap_or(false),
-        }
-    }
-
-    fn all_configured(&self) -> bool {
-        !self.prefs.providers.is_empty()
-            && self
-                .prefs
-                .providers
-                .iter()
-                .all(|slot| self.slot_configured(slot))
-    }
-
-    pub fn settings_snapshot(&self) -> SettingsSnapshot {
-        SettingsSnapshot {
-            signed_in: self.signed_in(),
-            signing_in: self.signing_in,
-            auth_error: self.auth_error.clone(),
-            ollama_running: self
-                .ollama
-                .as_ref()
-                .map(|status| status.running)
-                .unwrap_or(false),
-            supported_models: self
-                .ollama
-                .as_ref()
-                .map(|status| {
-                    deepl_core::OllamaModel::ALL
-                        .iter()
-                        .filter(|model| status.can_use(**model))
-                        .count()
-                })
-                .unwrap_or(0),
-            ollama_checking: self.ollama_checking,
-            ollama_error: self.ollama_error.clone(),
-            local_parallel: self.prefs.local_parallel,
-            cloud_parallel: self.prefs.cloud_parallel,
-            verbose_logging: self.prefs.verbose_logging,
-        }
-    }
-
-    pub fn sign_in(&mut self, cx: &mut Context<Self>) {
-        self.signing_in = true;
-        self.auth_error = None;
-        self.engine.send(Command::SignIn);
-        cx.notify();
-    }
-
-    pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
-        self.engine.cancel_sign_in();
-        self.signing_in = false;
-        cx.notify();
-    }
-
-    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
-        self.auth_error = None;
-        self.engine.send(Command::SignOut);
-        cx.notify();
-    }
-
-    pub fn refresh_ollama(&mut self, cx: &mut Context<Self>) {
-        self.ollama_checking = true;
-        self.engine.send(Command::LoadOllamaStatus);
-        cx.notify();
-    }
-
-    pub fn set_local_parallel(&mut self, count: usize, cx: &mut Context<Self>) {
-        self.prefs.local_parallel = count.clamp(1, MAX_PARALLEL_LIMIT);
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn set_cloud_parallel(&mut self, count: usize, cx: &mut Context<Self>) {
-        self.prefs.cloud_parallel = count.clamp(1, MAX_PARALLEL_LIMIT);
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn set_verbose(&mut self, value: bool, cx: &mut Context<Self>) {
-        self.prefs.verbose_logging = value;
-        crate::logging::set_verbose(value);
-        self.prefs.save();
-        cx.notify();
-    }
-
-    /// The text currently in the source pane.
-    pub fn source_text(&self, cx: &App) -> String {
-        self.source.read(cx).value().to_string()
-    }
-
-    fn jobs(&self) -> Vec<ProviderJob> {
-        self.prefs
-            .providers
-            .iter()
-            .map(|slot| match slot.kind {
-                deepl_core::Provider::DeepL => ProviderJob::DeepL {
-                    slot_id: slot.id,
-                    source: slot.pair.source,
-                    target: slot.pair.target,
-                },
-                deepl_core::Provider::Ollama => ProviderJob::Ollama {
-                    slot_id: slot.id,
-                    source: slot.pair.source,
-                    target: slot.pair.target,
-                    model: slot.model.id().to_string(),
-                    register: slot.register,
-                    context: slot.context().map(str::to_string),
-                    sampling: slot.sampling(),
-                    count: slot.count(),
-                    parallel: self.prefs.parallel_for(slot.model),
-                },
-            })
-            .collect()
-    }
-
-    fn translate(&mut self, cx: &mut Context<Self>) {
-        if self.prefs.providers.is_empty() {
-            self.open_provider_dialog(None, cx);
-            return;
-        }
-        if !self.all_configured() {
-            self.open_settings(cx);
-            return;
-        }
-
-        let text = self.source_text(cx);
-        if text.trim().is_empty() || self.translating {
-            return;
-        }
-
-        self.pending_text = text.clone();
-
-        self.next_request += 1;
-        let request_id = self.next_request;
-        self.translating = true;
-        self.outcomes.clear();
-
-        self.engine.send(Command::Translate {
-            request_id,
-            text,
-            jobs: self.jobs(),
-        });
-        cx.notify();
     }
 
     fn top_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
@@ -652,7 +170,7 @@ impl AmigoApp {
             .child(
                 ui::secondary_button("save-preset", "Save Preset…", palette).on_click(cx.listener(
                     |this, _, _window, cx| {
-                        this.open_preset_prompt(dialogs::PromptAction::SaveNew, String::new(), cx);
+                        this.open_preset_prompt(PromptAction::SaveNew, String::new(), cx);
                     },
                 )),
             )
@@ -675,7 +193,7 @@ impl AmigoApp {
     }
 
     fn source_pane(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        let characters = self.source_text(cx).chars().count();
+        let characters = self.source.read(cx).value().chars().count();
         let over_limit = characters > MAX_TRANSLATION_CHARS;
         let badge = format!(
             "{characters} character{}",
@@ -715,8 +233,8 @@ impl AmigoApp {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.source
                                     .update(cx, |state, cx| state.set_value("", window, cx));
-                                this.outcomes.clear();
-                                cx.notify();
+                                let state = this.state.clone();
+                                state.update(cx, |state, cx| state.clear_outcomes(cx));
                             })),
                     ),
             )
@@ -728,10 +246,15 @@ impl AmigoApp {
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> Div {
-        let outcome = self.outcomes.get(&slot.id).cloned().unwrap_or_default();
+        let outcome = self
+            .state
+            .read(cx)
+            .outcome(slot.id)
+            .cloned()
+            .unwrap_or_default();
         let subtitle = slot_subtitle(slot);
         let slot_id = slot.id;
-        let current_text = self.source_text(cx);
+        let current_text = self.source.read(cx).value().to_string();
         let stale = !outcome.translations.is_empty()
             && !outcome.source_text.is_empty()
             && outcome.source_text != current_text;
@@ -813,7 +336,12 @@ impl AmigoApp {
             return ui::error_card(error.clone(), palette);
         }
 
-        if outcome.translations.is_empty() && !self.slot_configured(slot) {
+        let (configured, translating) = {
+            let state = self.state.read(cx);
+            (state.slot_configured(slot), state.translating())
+        };
+
+        if outcome.translations.is_empty() && !configured {
             let message = match slot.kind {
                 deepl_core::Provider::DeepL => "Sign in with DeepL to use this provider.",
                 deepl_core::Provider::Ollama => {
@@ -837,7 +365,7 @@ impl AmigoApp {
         }
 
         if outcome.translations.is_empty() {
-            let message = if self.translating {
+            let message = if translating {
                 "Translating…"
             } else {
                 "Type on the left, then press Translate."
@@ -963,24 +491,11 @@ impl AmigoApp {
             )
     }
 
-    fn copy(&mut self, slot_id: u64, index: usize, cx: &mut Context<Self>) {
-        let Some(outcome) = self.outcomes.get_mut(&slot_id) else {
-            return;
-        };
-        let Some(text) = outcome.translations.get(index).cloned() else {
-            return;
-        };
-
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        outcome.copied = Some(index);
-        cx.notify();
-    }
-
     fn target_pane(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        let count = self.prefs.providers.len();
+        let slots = self.state.read(cx).prefs().providers.clone();
+        let count = slots.len();
         let badge = format!("{count} provider{}", if count == 1 { "" } else { "s" });
 
-        let slots = self.prefs.providers.clone();
         let cards: Vec<Div> = slots
             .iter()
             .map(|slot| self.result_card(slot, palette, cx))
@@ -1048,19 +563,25 @@ impl AmigoApp {
     }
 
     fn action_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        let text = self.source_text(cx);
-        let has_providers = !self.prefs.providers.is_empty();
-        let configured = self.all_configured();
+        let text = self.source.read(cx).value().to_string();
+        let (has_providers, configured, translating) = {
+            let state = self.state.read(cx);
+            (
+                !state.prefs().providers.is_empty(),
+                state.all_configured(),
+                state.translating(),
+            )
+        };
         let can_translate = configured
             && !text.trim().is_empty()
             && text.chars().count() <= MAX_TRANSLATION_CHARS
-            && !self.translating;
+            && !translating;
 
         let (label, actionable) = if !has_providers {
             ("Add a provider", true)
         } else if !configured {
             ("Set up providers", true)
-        } else if self.translating {
+        } else if translating {
             ("Translating…", false)
         } else {
             ("Translate", can_translate)
@@ -1096,13 +617,15 @@ fn preset_row(
     index: usize,
     label: &str,
     active: bool,
-    app: &WeakEntity<AmigoApp>,
+    view: &WeakEntity<AmigoApp>,
+    state: &Entity<AppState>,
     palette: &Palette,
 ) -> impl IntoElement {
     let palette = *palette;
-    let load = app.clone();
-    let rename = app.clone();
-    let delete = app.clone();
+    let load = state.clone();
+    let view = view.clone();
+    let rename = view.clone();
+    let delete = view;
     let rename_name = label.to_string();
 
     div()
@@ -1127,7 +650,7 @@ fn preset_row(
                 })
                 .child(SharedString::from(label))
                 .on_click(move |_, _window, cx| {
-                    let _ = load.update(cx, |app, cx| app.load_preset(index, cx));
+                    load.update(cx, |state, cx| state.load_preset(index, cx));
                 }),
         )
         .when(active, |this| {
@@ -1143,11 +666,7 @@ fn preset_row(
             )
             .on_click(move |_, _window, cx| {
                 let _ = rename.update(cx, |app, cx| {
-                    app.open_preset_prompt(
-                        dialogs::PromptAction::Rename(index),
-                        rename_name.clone(),
-                        cx,
-                    );
+                    app.open_preset_prompt(PromptAction::Rename(index), rename_name.clone(), cx);
                 });
             }),
         )
@@ -1168,6 +687,7 @@ fn preset_row(
 impl Render for AmigoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::for_appearance(window.appearance());
+        let global_error = self.state.read(cx).global_error().map(str::to_string);
 
         ui::window_root(&palette)
             .px(px(24.))
@@ -1197,12 +717,12 @@ impl Render for AmigoApp {
                     panes
                 }
             })
-            .when_some(self.global_error.clone(), |this, error| {
+            .when_some(global_error, |this, error| {
                 this.child(ui::error_banner(error, &palette).child(
                     ui::secondary_button("dismiss-error", "Dismiss", &palette).on_click(
                         cx.listener(|this, _, _window, cx| {
-                            this.global_error = None;
-                            cx.notify();
+                            let state = this.state.clone();
+                            state.update(cx, |state, cx| state.dismiss_global_error(cx));
                         }),
                     ),
                 ))

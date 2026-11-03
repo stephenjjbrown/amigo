@@ -14,11 +14,9 @@ use gpui_kit::component::slider::{Slider, SliderState, SliderValue};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    div, px, App, Context, Div, Entity, IntoElement, SharedString, Subscription, Window,
-};
+use gpui_kit::{div, px, App, Context, Div, Entity, IntoElement, SharedString, Window};
 
-use crate::app::AmigoApp;
+use crate::app::AppState;
 use crate::theme::{Palette, CONTROL_HEIGHT, TYPE};
 use crate::ui;
 
@@ -27,7 +25,7 @@ use crate::ui;
 type Choice<T> = (T, SharedString, bool);
 
 pub struct ProviderDialog {
-    app: Entity<AmigoApp>,
+    state: Entity<AppState>,
     /// `None` while adding, `Some(id)` while editing an existing slot.
     editing: Option<u64>,
     draft: ProviderSlot,
@@ -35,19 +33,18 @@ pub struct ProviderDialog {
     context: Entity<InputState>,
     temperature: Entity<SliderState>,
     top_p: Entity<SliderState>,
-    _observe: Subscription,
 }
 
 impl ProviderDialog {
     pub fn new(
-        app: Entity<AmigoApp>,
+        state: Entity<AppState>,
         editing: Option<u64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let draft = {
-            let app = app.read(cx);
-            match editing.and_then(|id| app.prefs.providers.iter().find(|slot| slot.id == id)) {
+            let state = state.read(cx);
+            match editing.and_then(|id| state.prefs().providers.iter().find(|slot| slot.id == id)) {
                 Some(slot) => slot.clone(),
                 None => ProviderSlot {
                     kind: Provider::DeepL,
@@ -80,20 +77,16 @@ impl ProviderDialog {
                 .step(0.05)
                 .default_value(draft.top_p)
         });
-        // Repaint the value readouts while a slider is dragged.
-        cx.observe(&temperature, |_, _, cx| cx.notify()).detach();
-        cx.observe(&top_p, |_, _, cx| cx.notify()).detach();
-
-        let _observe = cx.observe(&app, |_, _, cx| cx.notify());
+        // The value readouts read these states while rendering, so GPUI
+        // repaints them when a slider notifies; no observation is needed.
 
         Self {
-            app,
+            state,
             editing,
             draft,
             context,
             temperature,
             top_p,
-            _observe,
         }
     }
 
@@ -365,7 +358,7 @@ impl ProviderDialog {
     /// Every model, with whether Ollama reports it as usable. An unknown status
     /// is optimistic, so a slot can be configured before the daemon is found.
     fn model_choices(&self, cx: &App) -> Vec<Choice<OllamaModel>> {
-        let status = self.app.read(cx).ollama.as_ref();
+        let status = self.state.read(cx).ollama();
         OllamaModel::ALL
             .iter()
             .map(|model| {
@@ -394,8 +387,8 @@ impl ProviderDialog {
                 .on_click(cx.listener(|this, _, window, cx| {
                     let mut draft = this.draft.clone();
                     draft.context = this.context.read(cx).value().to_string();
-                    let app = this.app.clone();
-                    app.update(cx, |app, cx| app.save_provider(draft, cx));
+                    let state = this.state.clone();
+                    state.update(cx, |state, cx| state.save_provider(draft, cx));
                     window.remove_window();
                 })),
             )

@@ -1,20 +1,19 @@
 //! The Settings window: a real second OS window, as in the egui build, driven by
-//! the main view's state through a single `Entity<AmigoApp>` handle.
+//! the shared state through a single `Entity<AppState>` handle.
 
 use deepl_core::MAX_PARALLEL_LIMIT;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    div, px, ClipboardItem, Context, Div, Entity, FontWeight, IntoElement, SharedString,
-    Subscription, Window,
+    div, px, ClipboardItem, Context, Div, Entity, FontWeight, IntoElement, SharedString, Window,
 };
 
-use crate::app::AmigoApp;
+use crate::app::AppState;
 use crate::theme::{Palette, RADIUS, TYPE};
 use crate::ui;
 
 /// What a stepper row writes back when its count changes.
-type ApplyCount = fn(&mut AmigoApp, usize, &mut Context<AmigoApp>);
+type ApplyCount = fn(&mut AppState, usize, &mut Context<AppState>);
 
 /// A pool of parallel requests: the two counted settings in Settings.
 #[derive(Clone, Copy)]
@@ -47,24 +46,19 @@ impl Pool {
 
     fn apply(self) -> ApplyCount {
         match self {
-            Self::Local => AmigoApp::set_local_parallel,
-            Self::Cloud => AmigoApp::set_cloud_parallel,
+            Self::Local => AppState::set_local_parallel,
+            Self::Cloud => AppState::set_cloud_parallel,
         }
     }
 }
 
 pub struct SettingsView {
-    /// The main view owns the engine and the preferences; this window reads and
-    /// commands them through it.
-    app: Entity<AmigoApp>,
-    _observe: Subscription,
+    state: Entity<AppState>,
 }
 
 impl SettingsView {
-    pub fn new(app: Entity<AmigoApp>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Repaint whenever the main view's state changes (session, Ollama, prefs).
-        let _observe = cx.observe(&app, |_, _, cx| cx.notify());
-        Self { app, _observe }
+    pub fn new(state: Entity<AppState>, _window: &mut Window, _cx: &mut Context<Self>) -> Self {
+        Self { state }
     }
 
     /// A counted setting: name, − / value / +, and a note in muted type.
@@ -77,12 +71,12 @@ impl SettingsView {
     ) -> Div {
         let apply = pool.apply();
         let decrease = cx.listener(move |this, _, _window, cx| {
-            let app = this.app.clone();
-            app.update(cx, |app, cx| apply(app, value.saturating_sub(1), cx));
+            let state = this.state.clone();
+            state.update(cx, |state, cx| apply(state, value.saturating_sub(1), cx));
         });
         let increase = cx.listener(move |this, _, _window, cx| {
-            let app = this.app.clone();
-            app.update(cx, |app, cx| apply(app, value + 1, cx));
+            let state = this.state.clone();
+            state.update(cx, |state, cx| apply(state, value + 1, cx));
         });
 
         ui::control_row()
@@ -137,7 +131,7 @@ fn status_card(
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::for_appearance(window.appearance());
-        let snapshot = self.app.read(cx).settings_snapshot();
+        let snapshot = self.state.read(cx).settings_snapshot();
         let log_path = crate::logging::log_path();
 
         let signed_in = snapshot.signed_in;
@@ -154,8 +148,8 @@ impl Render for SettingsView {
         let auth_action = if signed_in {
             ui::danger_text_button("sign-out", "Sign out", &palette)
                 .on_click(cx.listener(|this, _, _window, cx| {
-                    let app = this.app.clone();
-                    app.update(cx, |app, cx| app.sign_out(cx));
+                    let state = this.state.clone();
+                    state.update(cx, |state, cx| state.sign_out(cx));
                 }))
                 .into_any_element()
         } else {
@@ -170,8 +164,8 @@ impl Render for SettingsView {
                 &palette,
             )
             .on_click(cx.listener(|this, _, _window, cx| {
-                let app = this.app.clone();
-                app.update(cx, |app, cx| app.sign_in(cx));
+                let state = this.state.clone();
+                state.update(cx, |state, cx| state.sign_in(cx));
             }))
             .into_any_element()
         };
@@ -197,8 +191,8 @@ impl Render for SettingsView {
                 this.child(
                     ui::secondary_button("cancel-sign-in", "Cancel sign-in", &palette).on_click(
                         cx.listener(|this, _, _window, cx| {
-                            let app = this.app.clone();
-                            app.update(cx, |app, cx| app.cancel_sign_in(cx));
+                            let state = this.state.clone();
+                            state.update(cx, |state, cx| state.cancel_sign_in(cx));
                         }),
                     ),
                 )
@@ -235,8 +229,8 @@ impl Render for SettingsView {
                         &palette,
                     )
                     .on_click(cx.listener(|this, _, _window, cx| {
-                        let app = this.app.clone();
-                        app.update(cx, |app, cx| app.refresh_ollama(cx));
+                        let state = this.state.clone();
+                        state.update(cx, |state, cx| state.refresh_ollama(cx));
                     })),
                 ),
             )
@@ -262,15 +256,15 @@ impl Render for SettingsView {
                             .checked(verbose)
                             .on_change(cx.listener(|this, checked, _window, cx| {
                                 let value = *checked;
-                                let app = this.app.clone();
-                                app.update(cx, |app, cx| app.set_verbose(value, cx));
+                                let state = this.state.clone();
+                                state.update(cx, |state, cx| state.set_verbose(value, cx));
                             })),
                     )
                     .child(div().flex_1())
                     .child(
                         ui::secondary_button("copy-diagnostics", "Copy diagnostics", &palette)
                             .on_click(cx.listener(|this, _, _window, cx| {
-                                let text = this.app.read(cx).diagnostics_text();
+                                let text = this.state.read(cx).diagnostics_text();
                                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                             })),
                     )
