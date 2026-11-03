@@ -12,12 +12,15 @@ time to discover, so they don't have to be rediscovered.
   `dist/Amigo.app` (`com.stephen.amigo`); `./scripts/run-macos.sh` builds and
   opens it.
 - Screenshots of windows are possible here: screen-recording permission is
-  granted. List window ids with `CGWindowListCopyWindowInfo` (a small Swift
-  script), then `screencapture -x -o -l<id> out.png`. `screencapture` without
-  `-l` also works. To capture a dialog, temporarily open it from
-  `AmigoApp::new` (via `App::defer`, as `open_dialog` does) and revert after.
-  Driving clicks with `CGEvent` needs **accessibility** permission, which is not
-  granted: hover states, menus and popovers cannot be exercised that way.
+  granted. List window ids with `CGWindowListCopyWindowInfo` keyed by
+  `kCGWindowOwnerPID` (a small Swift script), then `screencapture -x -o -l<id>
+  out.png`. `screencapture` without `-l` also works. Note the window is centred
+  on whichever display the app opened on, and `optionOnScreenOnly` can omit it
+  while `-l<id>` still captures it — filter by pid over `.optionAll` instead.
+  To capture a dialog, temporarily open it from `AmigoApp::new` (via
+  `App::defer`, as `open_dialog` does) and revert after. Driving clicks with
+  `CGEvent` needs **accessibility** permission, which is not granted: hover
+  states, menus and popovers cannot be exercised that way.
 
 ## The GPUI stack
 
@@ -102,7 +105,8 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
 
 - One model, `AppState` (`app/state.rs`), owns the engine, preferences, session,
   Ollama status and results. It implements **no `Render`** and holds **no window
-  handles**, so it cannot depend on a view.
+  handles**, so it cannot depend on a view. Which provider is selected is a
+  preference, saved with the rest of them.
 - Views hold `Entity<AppState>` and read it during render; they never hold a
   second copy of its data. Window handles live on `AmigoApp` because they belong
   to the view layer.
@@ -126,6 +130,12 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
 - Appearance follows the app's original egui design, but implemented the GPUI
   way. Do not reintroduce egui idioms (full-width bars inside a column, in-page
   titles duplicating the window title).
+- **Providers are a fixed pair.** `Preferences` holds exactly one
+  `ProviderSlot` per kind (`Provider::ALL`), and `Preferences::selected_provider`
+  names the one in use; `None` is the "(Select Provider)" state the pane starts
+  in. There is nothing to add or delete: the UI selects and configures, nothing
+  else. `translate` sends one job for the selected kind. Do not reintroduce
+  provider ids, add/remove actions, or a card per provider.
 - Booleans are `Switch`es; continuous values are `Slider`s; small integer counts
   are − / + steppers. Compact actions sit in a row, not stretched across it.
 - Icon-only buttons need a tooltip **and** an accesskit label — `ui::labeled`
@@ -148,6 +158,10 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
   was removed deliberately; there is no legacy migration to maintain.
 - Tokens are stored in `~/Library/Application Support/Amigo/` with 0600, not the
   Keychain — ad-hoc signing invalidated Keychain items.
+- **The app's `AssetSource` must fall back to `gpui_kit::assets::Assets`.** GPUI
+  has one global asset source; ours used to answer only for `icons/*.svg`, so
+  every crate icon (dropdown caret, checkbox tick, `IconName`) silently painted
+  nothing. Any new asset source needs the same fallback.
 
 ## Editing discipline
 

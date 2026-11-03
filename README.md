@@ -1,9 +1,9 @@
 # Amigo
 
 A native desktop translation client in pure Rust: DeepL over its hosted MCP
-service, plus local or cloud Ollama models. Run either provider or both and
-compare their output side by side. The UI is GPUI (Zed's GPU renderer); there
-is no WebView and no local web server.
+service, plus local or cloud Ollama models. Pick the provider for a translation
+and switch whenever you want a second opinion. The UI is GPUI (Zed's GPU
+renderer); there is no WebView and no local web server.
 
 ![Amigo](assets/icon.png)
 
@@ -13,8 +13,9 @@ is no WebView and no local web server.
   from the app, no API key
 - **Ollama** against the local daemon, with TranslateGemma 4B/12B/27B, Gemma 4
   and DeepSeek V4.1 Flash (cloud) as models
-- Any number of provider slots, each with its own pair, model, mode and
-  sampling; saved as presets you can switch between
+- Both providers are always available — choose one in the Translations header and
+  configure its pair, model, mode and sampling; saved as presets you can switch
+  between
 - **Multi-sample mode**: several translations of one sentence, shown as
   word-level diffs against the most typical sample, with duplicate samples
   grouped
@@ -82,7 +83,7 @@ and results, and implements no rendering at all. Views hold it, read it while
 rendering, and call commands on it to change anything. GPUI repaints a view when
 an entity it read notifies, so every open window stays in sync without
 observers; the one subscription is the main view reacting to the state events
-that ask for a window to open (sign-in, provider setup).
+that ask for a window to open (sign-in / setup).
 
 ## Tests
 
