@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use deepl_core::config::{Preferences, ProviderSlot, TranslationMode};
+use deepl_core::config::{Preferences, ProviderSlot};
 use deepl_core::diff::{self, DiffOp};
 use deepl_core::{SessionStatus, MAX_PARALLEL_LIMIT, MAX_TRANSLATION_CHARS};
 use deepl_engine::{Command, Engine, Event, ProviderJob};
@@ -23,8 +23,8 @@ use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::WindowHandle;
 use gpui_kit::{
-    div, px, App, ClipboardItem, Context, Div, Entity, FontWeight, IntoElement, Rgba, SharedString,
-    Stateful, Window,
+    div, px, App, ClipboardItem, Context, Div, Entity, FontWeight, IntoElement, SharedString,
+    WeakEntity, Window,
 };
 
 use gpui_kit::component::button::Button;
@@ -32,9 +32,10 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::Sizable as _;
 
 use crate::dialogs;
+use crate::format::{slot_subtitle, slot_title};
 use crate::provider;
 use crate::settings;
-use crate::theme::{Palette, CONTROL_HEIGHT, RADIUS, TYPE};
+use crate::theme::{Palette, CONTROL_HEIGHT, TYPE};
 use crate::ui;
 
 gpui_kit::actions!(amigo, [TranslateAction, OpenSettingsAction]);
@@ -476,79 +477,10 @@ impl AmigoApp {
                     let index = *index;
                     let label = label.clone();
                     let is_active = active == Some(index);
-                    let weak_load = weak.clone();
-                    let weak_rename = weak.clone();
-                    let weak_delete = weak.clone();
-                    let rename_name = label.clone();
+                    let weak = weak.clone();
 
                     menu = menu.item(PopupMenuItem::element(move |_window, _cx| {
-                        let load = weak_load.clone();
-                        let rename = weak_rename.clone();
-                        let delete = weak_delete.clone();
-                        // The builder is `Fn`, so this is cloned per render.
-                        let rename_name = rename_name.clone();
-                        let label = label.clone();
-
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .w_full()
-                            .h(px(26.))
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("preset-load-{index}")))
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .cursor_pointer()
-                                    .text_size(px(TYPE.small))
-                                    .text_color(if is_active {
-                                        palette.text
-                                    } else {
-                                        palette.text_secondary
-                                    })
-                                    .child(SharedString::from(label.clone()))
-                                    .on_click(move |_, _window, cx| {
-                                        let _ =
-                                            load.update(cx, |app, cx| app.load_preset(index, cx));
-                                    }),
-                            )
-                            .when(is_active, |this| {
-                                this.child(ui::icon("icons/check.svg", 12.0, palette.success))
-                            })
-                            .child(
-                                menu_action(
-                                    &format!("preset-rename-{index}"),
-                                    "icons/pencil.svg",
-                                    "Rename preset",
-                                    palette.text_secondary,
-                                    palette.surface_strong,
-                                )
-                                .on_click(move |_, _window, cx| {
-                                    let _ = rename.update(cx, |app, cx| {
-                                        app.open_preset_prompt(
-                                            dialogs::PromptAction::Rename(index),
-                                            rename_name.clone(),
-                                            cx,
-                                        );
-                                    });
-                                }),
-                            )
-                            .child(
-                                menu_action(
-                                    &format!("preset-delete-{index}"),
-                                    "icons/trash.svg",
-                                    "Delete preset",
-                                    palette.danger,
-                                    palette.danger_soft,
-                                )
-                                .on_click(move |_, _window, cx| {
-                                    let _ = delete
-                                        .update(cx, |app, cx| app.open_preset_confirm(index, cx));
-                                }),
-                            )
+                        preset_row(index, &label, is_active, &weak, &palette)
                     }));
                 }
                 menu
@@ -649,7 +581,7 @@ impl AmigoApp {
         cx.notify();
     }
 
-    /// sampling.
+    /// The text currently in the source pane.
     pub fn source_text(&self, cx: &App) -> String {
         self.source.read(cx).value().to_string()
     }
@@ -738,19 +670,8 @@ impl AmigoApp {
             .gap(px(8.))
             .h(px(CONTROL_HEIGHT + 4.0))
             .px(px(14.))
-            .child(
-                div()
-                    .text_size(px(TYPE.heading))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(palette.text)
-                    .child(SharedString::from(title.to_string())),
-            )
-            .child(ui::badge(
-                badge,
-                palette.text_secondary,
-                palette.surface_muted,
-                palette.border,
-            ))
+            .child(ui::heading(title, palette.text))
+            .child(ui::badge(badge, palette))
     }
 
     fn source_pane(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
@@ -834,31 +755,22 @@ impl AmigoApp {
                             .flex_col()
                             .gap(px(2.))
                             .child(
-                                div()
-                                    .text_size(px(TYPE.body))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(palette.text)
-                                    .child(SharedString::from(slot_title(slot))),
+                                ui::text(slot_title(slot), TYPE.body, palette.text)
+                                    .font_weight(FontWeight::SEMIBOLD),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(TYPE.caption))
-                                    .text_color(palette.text_muted)
-                                    .child(SharedString::from(subtitle)),
-                            ),
+                            .child(ui::text(subtitle, TYPE.caption, palette.text_muted)),
                     )
                     .child(div().flex_1())
                     .when_some(status, |this, (text, warning)| {
-                        this.child(
-                            div()
-                                .text_size(px(TYPE.caption))
-                                .text_color(if warning {
-                                    palette.warning
-                                } else {
-                                    palette.text_faint
-                                })
-                                .child(SharedString::from(text)),
-                        )
+                        this.child(ui::text(
+                            text,
+                            TYPE.caption,
+                            if warning {
+                                palette.warning
+                            } else {
+                                palette.text_faint
+                            },
+                        ))
                     })
                     .child(
                         ui::icon_button(
@@ -898,21 +810,10 @@ impl AmigoApp {
         cx: &mut Context<Self>,
     ) -> Div {
         if let Some(error) = &outcome.error {
-            return div()
-                .w_full()
-                .rounded(px(RADIUS.sm))
-                .bg(palette.danger_soft)
-                .border_1()
-                .border_color(palette.danger_border)
-                .px(px(11.))
-                .py(px(8.))
-                .text_size(px(TYPE.small))
-                .text_color(palette.danger)
-                .child(SharedString::from(error.clone()));
+            return ui::error_card(error.clone(), palette);
         }
 
-        if outcome.error.is_none() && outcome.translations.is_empty() && !self.slot_configured(slot)
-        {
+        if outcome.translations.is_empty() && !self.slot_configured(slot) {
             let message = match slot.kind {
                 deepl_core::Provider::DeepL => "Sign in with DeepL to use this provider.",
                 deepl_core::Provider::Ollama => {
@@ -924,12 +825,7 @@ impl AmigoApp {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(
-                    div()
-                        .text_size(px(TYPE.small))
-                        .text_color(palette.text_muted)
-                        .child(message),
-                )
+                .child(ui::text(message, TYPE.small, palette.text_muted))
                 .child(
                     ui::secondary_button(
                         &format!("open-settings-{slot_id}"),
@@ -941,14 +837,12 @@ impl AmigoApp {
         }
 
         if outcome.translations.is_empty() {
-            return div()
-                .text_size(px(TYPE.small))
-                .text_color(palette.text_faint)
-                .child(if self.translating {
-                    "Translating…"
-                } else {
-                    "Type on the left, then press Translate."
-                });
+            let message = if self.translating {
+                "Translating…"
+            } else {
+                "Type on the left, then press Translate."
+            };
+            return ui::text(message, TYPE.small, palette.text_faint);
         }
 
         let slot_id = slot.id;
@@ -1018,23 +912,20 @@ impl AmigoApp {
         cx: &mut Context<Self>,
     ) -> Div {
         let body = match ops {
-            None => div()
+            None => ui::text(text, TYPE.title, palette.text)
                 .flex_1()
-                .min_w(px(0.))
-                .text_size(px(TYPE.title))
-                .text_color(palette.text)
-                .child(SharedString::from(text.to_string())),
+                .min_w(px(0.)),
             Some(ops) => {
                 let spans: Vec<Div> = ops
                     .iter()
                     .filter(|op| !(hide_deletions && matches!(op, DiffOp::Delete(_))))
                     .map(|op| match op {
-                        DiffOp::Keep(text) => diff_span(text, palette.text_muted, None, false),
+                        DiffOp::Keep(text) => ui::diff_span(text, palette.text_muted, None, false),
                         DiffOp::Insert(text) => {
-                            diff_span(text, palette.success, Some(palette.success_soft), false)
+                            ui::diff_span(text, palette.success, Some(palette.success_soft), false)
                         }
                         DiffOp::Delete(text) => {
-                            diff_span(text, palette.danger, Some(palette.danger_soft), true)
+                            ui::diff_span(text, palette.danger, Some(palette.danger_soft), true)
                         }
                     })
                     .collect();
@@ -1049,56 +940,26 @@ impl AmigoApp {
             }
         };
 
+        let id = format!("copy-{slot_id}-{index}");
+        let copy = if copied {
+            ui::icon_button_tinted(&id, "icons/check.svg", "Copied", palette.success, palette)
+        } else {
+            ui::icon_button(&id, "icons/copy.svg", "Copy translation", palette)
+        };
+
         div()
             .flex()
             .items_start()
             .gap(px(8.))
             .w_full()
             .when(count > 1, |this| {
-                this.child(
-                    div()
-                        .pt(px(3.))
-                        .text_size(px(TYPE.micro))
-                        .text_color(palette.text_faint)
-                        .child(SharedString::from(format!("×{count}"))),
-                )
+                this.child(ui::text(format!("×{count}"), TYPE.micro, palette.text_faint).pt(px(3.)))
             })
             .child(body)
             .child(
-                div()
-                    .id(SharedString::from(format!("copy-{slot_id}-{index}")))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(CONTROL_HEIGHT))
-                    .flex_none()
-                    .rounded(px(RADIUS.sm))
-                    .bg(palette.surface_muted)
-                    .border_1()
-                    .border_color(palette.border)
-                    .hover(move |style| style.bg(palette.surface_strong))
-                    .cursor_pointer()
-                    .aria_label(SharedString::from(if copied {
-                        "Copied"
-                    } else {
-                        "Copy translation"
-                    }))
-                    .child(ui::icon(
-                        if copied {
-                            "icons/check.svg"
-                        } else {
-                            "icons/copy.svg"
-                        },
-                        14.0,
-                        if copied {
-                            palette.success
-                        } else {
-                            palette.text_secondary
-                        },
-                    ))
-                    .on_click(
-                        cx.listener(move |this, _, _window, cx| this.copy(slot_id, index, cx)),
-                    ),
+                copy.on_click(
+                    cx.listener(move |this, _, _window, cx| this.copy(slot_id, index, cx)),
+                ),
             )
     }
 
@@ -1157,25 +1018,8 @@ impl AmigoApp {
                 .children(cards)
         };
 
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .h(px(CONTROL_HEIGHT + 4.0))
-            .px(px(14.))
-            .child(
-                div()
-                    .text_size(px(TYPE.heading))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(palette.text)
-                    .child("Translations"),
-            )
-            .child(ui::badge(
-                &badge,
-                palette.text_secondary,
-                palette.surface_muted,
-                palette.border,
-            ))
+        let header = self
+            .header("Translations", &badge, palette)
             .child(div().flex_1())
             .child(
                 ui::icon_text_button(
@@ -1228,18 +1072,17 @@ impl AmigoApp {
             .gap(px(8.))
             .w_full()
             .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(TYPE.small))
-                    .text_color(palette.text_faint)
-                    .child(if !has_providers || !configured {
-                        ""
-                    } else if cfg!(target_os = "macos") {
-                        "Cmd+Enter"
-                    } else {
-                        "Ctrl+Enter"
-                    }),
-            )
+            .child(ui::text(
+                if !has_providers || !configured {
+                    ""
+                } else if cfg!(target_os = "macos") {
+                    "Cmd+Enter"
+                } else {
+                    "Ctrl+Enter"
+                },
+                TYPE.small,
+                palette.text_faint,
+            ))
             .child(
                 ui::primary_button("translate", label, actionable, palette)
                     .on_click(cx.listener(|this, _, _window, cx| this.translate(cx))),
@@ -1247,36 +1090,86 @@ impl AmigoApp {
     }
 }
 
-fn slot_title(slot: &ProviderSlot) -> String {
-    format!(
-        "{} · {} → {}",
-        slot.kind.label(),
-        slot.pair.source.code(),
-        slot.pair.target.code()
-    )
-}
+/// One preset in the picker menu: the name loads it, and the two icons rename or
+/// delete it.
+fn preset_row(
+    index: usize,
+    label: &str,
+    active: bool,
+    app: &WeakEntity<AmigoApp>,
+    palette: &Palette,
+) -> impl IntoElement {
+    let palette = *palette;
+    let load = app.clone();
+    let rename = app.clone();
+    let delete = app.clone();
+    let rename_name = label.to_string();
 
-fn slot_subtitle(slot: &ProviderSlot) -> String {
-    match slot.kind {
-        deepl_core::Provider::DeepL => "Single translation".to_string(),
-        deepl_core::Provider::Ollama => match slot.mode {
-            TranslationMode::Single => slot.model.label().to_string(),
-            TranslationMode::Multi => format!("{} · {} variants", slot.model.label(), slot.count()),
-        },
-    }
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .w_full()
+        .h(px(26.))
+        .child(
+            div()
+                .id(SharedString::from(format!("preset-load-{index}")))
+                .flex_1()
+                .min_w(px(0.))
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .cursor_pointer()
+                .text_size(px(TYPE.small))
+                .text_color(if active {
+                    palette.text
+                } else {
+                    palette.text_secondary
+                })
+                .child(SharedString::from(label))
+                .on_click(move |_, _window, cx| {
+                    let _ = load.update(cx, |app, cx| app.load_preset(index, cx));
+                }),
+        )
+        .when(active, |this| {
+            this.child(ui::icon("icons/check.svg", 12.0, palette.success))
+        })
+        .child(
+            ui::menu_action(
+                &format!("preset-rename-{index}"),
+                "icons/pencil.svg",
+                "Rename preset",
+                palette.text_secondary,
+                palette.surface_strong,
+            )
+            .on_click(move |_, _window, cx| {
+                let _ = rename.update(cx, |app, cx| {
+                    app.open_preset_prompt(
+                        dialogs::PromptAction::Rename(index),
+                        rename_name.clone(),
+                        cx,
+                    );
+                });
+            }),
+        )
+        .child(
+            ui::menu_action(
+                &format!("preset-delete-{index}"),
+                "icons/trash.svg",
+                "Delete preset",
+                palette.danger,
+                palette.danger_soft,
+            )
+            .on_click(move |_, _window, cx| {
+                let _ = delete.update(cx, |app, cx| app.open_preset_confirm(index, cx));
+            }),
+        )
 }
 
 impl Render for AmigoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::for_appearance(window.appearance());
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(palette.bg)
-            .text_color(palette.text)
-            .font_family("Inter")
+        ui::window_root(&palette)
             .px(px(24.))
             .py(px(18.))
             .gap(px(8.))
@@ -1305,80 +1198,15 @@ impl Render for AmigoApp {
                 }
             })
             .when_some(self.global_error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .w_full()
-                        .rounded(px(RADIUS.md))
-                        .bg(palette.danger_soft)
-                        .border_1()
-                        .border_color(palette.danger_border)
-                        .px(px(12.))
-                        .py(px(8.))
-                        .child(ui::icon("icons/triangle-alert.svg", 16.0, palette.danger))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(TYPE.body))
-                                .text_color(palette.danger)
-                                .child(SharedString::from(error)),
-                        )
-                        .child(
-                            ui::secondary_button("dismiss-error", "Dismiss", &palette).on_click(
-                                cx.listener(|this, _, _window, cx| {
-                                    this.global_error = None;
-                                    cx.notify();
-                                }),
-                            ),
-                        ),
-                )
+                this.child(ui::error_banner(error, &palette).child(
+                    ui::secondary_button("dismiss-error", "Dismiss", &palette).on_click(
+                        cx.listener(|this, _, _window, cx| {
+                            this.global_error = None;
+                            cx.notify();
+                        }),
+                    ),
+                ))
             })
             .child(self.action_bar(&palette, cx))
     }
-}
-
-/// One token in a diff line: neutral text, an insertion, or a struck-through
-/// deletion.
-fn diff_span(text: &str, color: Rgba, background: Option<Rgba>, struck: bool) -> Div {
-    let span = div()
-        .px(px(2.))
-        .rounded(px(2.))
-        .text_size(px(TYPE.title))
-        .text_color(color)
-        .child(SharedString::from(text.to_string()));
-
-    let span = match background {
-        Some(background) => span.bg(background),
-        None => span,
-    };
-
-    if struck {
-        span.line_through()
-    } else {
-        span
-    }
-}
-
-/// A compact icon button for a menu row.
-fn menu_action(
-    id: &str,
-    icon_path: &str,
-    label: &str,
-    color: Rgba,
-    hover_bg: Rgba,
-) -> Stateful<Div> {
-    div()
-        .id(SharedString::from(id.to_string()))
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(px(22.))
-        .flex_none()
-        .rounded(px(RADIUS.sm))
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover_bg))
-        .aria_label(SharedString::from(label.to_string()))
-        .child(ui::icon(icon_path, 13.0, color))
 }

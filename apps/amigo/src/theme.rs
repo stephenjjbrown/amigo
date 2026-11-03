@@ -3,12 +3,14 @@
 use std::borrow::Cow;
 
 use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
-use gpui_kit::{px, rgb, rgba, App, Rgba, Window, WindowAppearance};
+use gpui_kit::{px, rgb, rgba, App, Rgba, WindowAppearance};
+
+/// The app's typeface, registered by `install` and named at every window root.
+pub const FONT_FAMILY: &str = "Inter";
 
 /// Height of every interactive control: buttons, inputs, pickers.
 pub const CONTROL_HEIGHT: f32 = 32.0;
 
-#[allow(dead_code)] // tokens the port has not reached yet
 pub struct Radii {
     pub sm: f32,
     pub md: f32,
@@ -21,16 +23,13 @@ pub const RADIUS: Radii = Radii {
     lg: 8.0,
 };
 
-#[allow(dead_code)] // tokens the port has not reached yet
 pub struct TypeScale {
     pub micro: f32,
     pub caption: f32,
     pub small: f32,
     pub body: f32,
     pub heading: f32,
-    pub large: f32,
     pub title: f32,
-    pub display: f32,
 }
 
 pub const TYPE: TypeScale = TypeScale {
@@ -39,15 +38,11 @@ pub const TYPE: TypeScale = TypeScale {
     small: 11.5,
     body: 12.5,
     heading: 13.5,
-    large: 14.0,
     title: 15.5,
-    display: 20.0,
 };
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // tokens the port has not reached yet
 pub struct Palette {
-    pub dark: bool,
     pub bg: Rgba,
     pub surface: Rgba,
     pub surface_muted: Rgba,
@@ -79,7 +74,6 @@ impl Palette {
 
     fn dark() -> Self {
         Self {
-            dark: true,
             bg: rgb(0x131417),
             surface: rgb(0x1d1f24),
             surface_muted: rgb(0x191b20),
@@ -104,7 +98,6 @@ impl Palette {
 
     fn light() -> Self {
         Self {
-            dark: false,
             bg: rgb(0xedf0f5),
             surface: rgb(0xffffff),
             surface_muted: rgb(0xf6f7fa),
@@ -142,27 +135,24 @@ pub fn install(cx: &mut App) {
 /// Install gpui-component's theme from our palette, so the crate's controls and
 /// our own surfaces share one set of colours. Heights come from `Size::Medium`
 /// (32px), which is our control height, so nothing needs pinning.
-pub fn install_component_theme(cx: &mut App, window: Option<&mut Window>) {
+pub fn install_component_theme(cx: &mut App) {
     gpui_kit::init(cx);
 
-    let appearance = match window.as_ref() {
-        Some(window) => window.appearance(),
-        None => cx.window_appearance(),
-    };
+    let appearance = cx.window_appearance();
 
     // Everything the components read must go through `Theme::update`: it is what
     // reconciles the derived token set with the colours. Assigning `colors`
     // through `global_mut` leaves the tokens on the default theme, which shows up
     // as foreign palette colours and black text on our dark surfaces.
     Theme::update(cx, |theme| {
-        theme.font_family = "Inter".into();
+        theme.font_family = FONT_FAMILY.into();
         theme.font_size = px(16.0);
         theme.radius = px(RADIUS.sm);
         theme.radius_lg = px(RADIUS.lg);
         theme.shadow = true;
     });
 
-    Theme::change(ThemeMode::from(appearance), window, cx);
+    Theme::change(ThemeMode::from(appearance), None, cx);
 
     // Applied after the mode resolves, because `Theme::colors` is the active
     // palette while the per-mode `ThemeConfig` uses its own colour type.

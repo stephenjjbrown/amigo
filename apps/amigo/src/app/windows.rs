@@ -10,6 +10,10 @@ use gpui_kit::{
 use super::AmigoApp;
 use crate::{dialogs, provider, settings};
 
+/// The name prompt and the confirmation share one small window size.
+const DIALOG_SIZE: (f32, f32) = (360.0, 170.0);
+const DIALOG_MIN_SIZE: (f32, f32) = (320.0, 150.0);
+
 impl AmigoApp {
     pub fn open_provider_dialog(&mut self, editing: Option<u64>, cx: &mut Context<Self>) {
         Self::open_dialog(
@@ -36,22 +40,11 @@ impl AmigoApp {
             None => "Remove this provider?".to_string(),
         };
 
-        Self::open_dialog(
-            cx,
-            self.confirm_window.as_ref(),
+        self.open_confirm(
             "Remove provider",
-            (360.0, 170.0),
-            (320.0, 150.0),
-            |app, handle| app.confirm_window = Some(handle),
-            move |app, _window, cx| {
-                dialogs::ConfirmDialog::new(
-                    app,
-                    dialogs::ConfirmAction::DeleteProvider(id),
-                    "Remove provider".to_string(),
-                    body.clone(),
-                    cx,
-                )
-            },
+            body,
+            dialogs::ConfirmAction::DeleteProvider(id),
+            cx,
         );
     }
 
@@ -62,17 +55,12 @@ impl AmigoApp {
         initial: String,
         cx: &mut Context<Self>,
     ) {
-        let title = match action {
-            dialogs::PromptAction::SaveNew => "Save preset",
-            dialogs::PromptAction::Rename(_) => "Rename preset",
-        };
-
         Self::open_dialog(
             cx,
             self.prompt_window.as_ref(),
-            title,
-            (360.0, 170.0),
-            (320.0, 150.0),
+            action.window_title(),
+            DIALOG_SIZE,
+            DIALOG_MIN_SIZE,
             |app, handle| app.prompt_window = Some(handle),
             move |app, window, cx| dialogs::PromptDialog::new(app, action, &initial, window, cx),
         );
@@ -89,21 +77,31 @@ impl AmigoApp {
             None => "Delete this preset?".to_string(),
         };
 
+        self.open_confirm(
+            "Delete preset",
+            body,
+            dialogs::ConfirmAction::DeletePreset(index),
+            cx,
+        );
+    }
+
+    /// Open the shared confirmation window with a destructive action attached.
+    pub fn open_confirm(
+        &mut self,
+        title: &'static str,
+        body: String,
+        action: dialogs::ConfirmAction,
+        cx: &mut Context<Self>,
+    ) {
         Self::open_dialog(
             cx,
             self.confirm_window.as_ref(),
-            "Delete preset",
-            (360.0, 170.0),
-            (320.0, 150.0),
+            title,
+            DIALOG_SIZE,
+            DIALOG_MIN_SIZE,
             |app, handle| app.confirm_window = Some(handle),
             move |app, _window, cx| {
-                dialogs::ConfirmDialog::new(
-                    app,
-                    dialogs::ConfirmAction::DeletePreset(index),
-                    "Delete preset".to_string(),
-                    body.clone(),
-                    cx,
-                )
+                dialogs::ConfirmDialog::new(app, action, title.to_string(), body.clone(), cx)
             },
         );
     }

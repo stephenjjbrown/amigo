@@ -11,10 +11,6 @@ const ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../../../assets/icons/arrow-right-left.svg"),
     ),
     (
-        "icons/chevron-down.svg",
-        include_bytes!("../../../assets/icons/chevron-down.svg"),
-    ),
-    (
         "icons/settings.svg",
         include_bytes!("../../../assets/icons/settings.svg"),
     ),
@@ -53,10 +49,6 @@ const ICONS: &[(&str, &[u8])] = &[
     (
         "icons/refresh-cw.svg",
         include_bytes!("../../../assets/icons/refresh-cw.svg"),
-    ),
-    (
-        "icons/clock.svg",
-        include_bytes!("../../../assets/icons/clock.svg"),
     ),
 ];
 

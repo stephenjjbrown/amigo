@@ -1,15 +1,57 @@
 //! The Settings window: a real second OS window, as in the egui build, driven by
 //! the main view's state through a single `Entity<AmigoApp>` handle.
 
+use deepl_core::MAX_PARALLEL_LIMIT;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    div, px, ClipboardItem, Context, Div, Entity, FontWeight, IntoElement, Subscription, Window,
+    div, px, ClipboardItem, Context, Div, Entity, FontWeight, IntoElement, SharedString,
+    Subscription, Window,
 };
 
 use crate::app::AmigoApp;
 use crate::theme::{Palette, RADIUS, TYPE};
 use crate::ui;
+
+/// What a stepper row writes back when its count changes.
+type ApplyCount = fn(&mut AmigoApp, usize, &mut Context<AmigoApp>);
+
+/// A pool of parallel requests: the two counted settings in Settings.
+#[derive(Clone, Copy)]
+enum Pool {
+    Local,
+    Cloud,
+}
+
+impl Pool {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Local => "Local",
+            Self::Cloud => "Cloud",
+        }
+    }
+
+    fn note(self) -> &'static str {
+        match self {
+            Self::Local => "This may be limited by local OLLAMA_NUM_PARALLEL",
+            Self::Cloud => "Plans allow 1 (Free), 3 (Pro), 10 (Max)",
+        }
+    }
+
+    fn apply(self) -> ApplyCount {
+        match self {
+            Self::Local => AmigoApp::set_local_parallel,
+            Self::Cloud => AmigoApp::set_cloud_parallel,
+        }
+    }
+}
 
 pub struct SettingsView {
     /// The main view owns the engine and the preferences; this window reads and
@@ -24,10 +66,52 @@ impl SettingsView {
         let _observe = cx.observe(&app, |_, _, cx| cx.notify());
         Self { app, _observe }
     }
+
+    /// A counted setting: name, − / value / +, and a note in muted type.
+    fn stepper_row(
+        &self,
+        pool: Pool,
+        value: usize,
+        palette: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let apply = pool.apply();
+        let decrease = cx.listener(move |this, _, _window, cx| {
+            let app = this.app.clone();
+            app.update(cx, |app, cx| apply(app, value.saturating_sub(1), cx));
+        });
+        let increase = cx.listener(move |this, _, _window, cx| {
+            let app = this.app.clone();
+            app.update(cx, |app, cx| apply(app, value + 1, cx));
+        });
+
+        ui::control_row()
+            .child(ui::text(pool.label(), TYPE.body, palette.text_secondary))
+            .child(
+                ui::step_button(&format!("{}-minus", pool.id()), "−", value > 1, palette)
+                    .on_click(decrease),
+            )
+            .child(ui::value_label(&format!("{value}"), palette))
+            .child(
+                ui::step_button(
+                    &format!("{}-plus", pool.id()),
+                    "＋",
+                    value < MAX_PARALLEL_LIMIT,
+                    palette,
+                )
+                .on_click(increase),
+            )
+            .child(ui::text(pool.note(), TYPE.caption, palette.text_faint))
+    }
 }
 
 /// A status card: dot, bold title, muted detail — the old Settings shape.
-fn status_card(dot: bool, title: String, detail: String, palette: &Palette) -> Div {
+fn status_card(
+    connected: bool,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    palette: &Palette,
+) -> Div {
     div()
         .flex()
         .items_center()
@@ -39,7 +123,7 @@ fn status_card(dot: bool, title: String, detail: String, palette: &Palette) -> D
         .border_1()
         .border_color(palette.border)
         .p(px(12.))
-        .child(ui::status_dot(dot, palette))
+        .child(ui::status_dot(connected, palette))
         .child(
             div()
                 .flex()
@@ -92,27 +176,19 @@ impl Render for SettingsView {
             .into_any_element()
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(palette.bg)
-            .text_color(palette.text)
-            .font_family("Inter")
-            .p(px(16.))
-            .gap(px(10.))
+        ui::dialog_root(&palette)
             .child(ui::section_label("DEEPL ACCOUNT", &palette))
             .child(status_card(
                 signed_in,
                 if signed_in {
-                    "Signed in with DeepL".to_string()
+                    "Signed in with DeepL"
                 } else {
-                    "Not signed in".to_string()
+                    "Not signed in"
                 },
                 if signed_in {
-                    "Connected through DeepL's MCP service.".to_string()
+                    "Connected through DeepL's MCP service."
                 } else {
-                    "Sign in to translate with DeepL.".to_string()
+                    "Sign in to translate with DeepL."
                 },
                 &palette,
             ))
@@ -128,16 +204,16 @@ impl Render for SettingsView {
                 )
             }))
             .when_some(auth_error, |this, error| {
-                this.child(ui::error_card(&error, &palette))
+                this.child(ui::error_card(error, &palette))
             })
             .child(ui::hairline(&palette))
             .child(ui::section_label("OLLAMA", &palette))
             .child(status_card(
                 ollama_running,
                 if ollama_running {
-                    "Ollama is running".to_string()
+                    "Ollama is running"
                 } else {
-                    "Ollama is not running".to_string()
+                    "Ollama is not running"
                 },
                 if ollama_running {
                     format!("{supported} supported model(s) available")
@@ -165,67 +241,11 @@ impl Render for SettingsView {
                 ),
             )
             .when_some(ollama_error, |this, error| {
-                this.child(ui::error_card(&error, &palette))
+                this.child(ui::error_card(error, &palette))
             })
             .child(ui::section_label("PARALLEL REQUESTS", &palette))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(ui::text("Local", TYPE.body, palette.text_secondary))
-                    .child(
-                        ui::step_button("local-minus", "−", local > 1, &palette).on_click(
-                            cx.listener(move |this, _, _window, cx| {
-                                let app = this.app.clone();
-                                app.update(cx, |app, cx| app.set_local_parallel(local - 1, cx));
-                            }),
-                        ),
-                    )
-                    .child(ui::value_label(&format!("{local}"), &palette))
-                    .child(
-                        ui::step_button("local-plus", "＋", local < 10, &palette).on_click(
-                            cx.listener(move |this, _, _window, cx| {
-                                let app = this.app.clone();
-                                app.update(cx, |app, cx| app.set_local_parallel(local + 1, cx));
-                            }),
-                        ),
-                    )
-                    .child(ui::text(
-                        "This may be limited by local OLLAMA_NUM_PARALLEL",
-                        TYPE.caption,
-                        palette.text_faint,
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(ui::text("Cloud", TYPE.body, palette.text_secondary))
-                    .child(
-                        ui::step_button("cloud-minus", "−", cloud > 1, &palette).on_click(
-                            cx.listener(move |this, _, _window, cx| {
-                                let app = this.app.clone();
-                                app.update(cx, |app, cx| app.set_cloud_parallel(cloud - 1, cx));
-                            }),
-                        ),
-                    )
-                    .child(ui::value_label(&format!("{cloud}"), &palette))
-                    .child(
-                        ui::step_button("cloud-plus", "＋", cloud < 10, &palette).on_click(
-                            cx.listener(move |this, _, _window, cx| {
-                                let app = this.app.clone();
-                                app.update(cx, |app, cx| app.set_cloud_parallel(cloud + 1, cx));
-                            }),
-                        ),
-                    )
-                    .child(ui::text(
-                        "Plans allow 1 (Free), 3 (Pro), 10 (Max)",
-                        TYPE.caption,
-                        palette.text_faint,
-                    )),
-            )
+            .child(self.stepper_row(Pool::Local, local, &palette, cx))
+            .child(self.stepper_row(Pool::Cloud, cloud, &palette, cx))
             .child(div().flex_1())
             .child(ui::hairline(&palette))
             .child(ui::text(
@@ -234,10 +254,7 @@ impl Render for SettingsView {
                 palette.text_faint,
             ))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
+                ui::footer()
                     .w_full()
                     .child(
                         Switch::new("verbose")

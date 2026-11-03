@@ -6,7 +6,7 @@
 
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, Context, Entity, IntoElement, Subscription, Window};
+use gpui_kit::{div, App, Context, Entity, IntoElement, Subscription, Window};
 
 use crate::app::AmigoApp;
 use crate::theme::{Palette, TYPE};
@@ -26,6 +26,16 @@ pub struct PromptDialog {
     action: PromptAction,
     name: Entity<InputState>,
     _observe: Subscription,
+}
+
+impl PromptAction {
+    /// The window title, which is also the dialog's heading.
+    pub fn window_title(self) -> &'static str {
+        match self {
+            Self::SaveNew => "Save preset",
+            Self::Rename(_) => "Rename preset",
+        }
+    }
 }
 
 impl PromptDialog {
@@ -54,10 +64,7 @@ impl PromptDialog {
     }
 
     fn title(&self) -> &'static str {
-        match self.action {
-            PromptAction::SaveNew => "Save preset",
-            PromptAction::Rename(_) => "Rename preset",
-        }
+        self.action.window_title()
     }
 
     fn submit_label(&self) -> &'static str {
@@ -91,15 +98,7 @@ impl Render for PromptDialog {
         let error = self.error(cx);
         let can_submit = error.is_none();
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(palette.bg)
-            .text_color(palette.text)
-            .font_family("Inter")
-            .p(px(16.))
-            .gap(px(10.))
+        ui::dialog_root(&palette)
             .child(ui::heading(self.title(), palette.text))
             .child(Input::new(&self.name))
             .when_some(error, |this, error| {
@@ -107,10 +106,7 @@ impl Render for PromptDialog {
             })
             .child(div().flex_1())
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
+                ui::footer()
                     .child(
                         ui::primary_button(
                             "preset-save",
@@ -180,15 +176,7 @@ impl Render for ConfirmDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::for_appearance(window.appearance());
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(palette.bg)
-            .text_color(palette.text)
-            .font_family("Inter")
-            .p(px(16.))
-            .gap(px(10.))
+        ui::dialog_root(&palette)
             .child(ui::heading(self.title.clone(), palette.text))
             .child(ui::text(
                 self.body.clone(),
@@ -197,10 +185,7 @@ impl Render for ConfirmDialog {
             ))
             .child(div().flex_1())
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
+                ui::footer()
                     .child(
                         ui::danger_button("confirm-delete", "Delete", &palette).on_click(
                             cx.listener(|this, _, window, cx| {

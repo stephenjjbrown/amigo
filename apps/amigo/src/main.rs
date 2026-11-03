@@ -1,6 +1,7 @@
 mod app;
 mod assets;
 mod dialogs;
+mod format;
 mod logging;
 mod provider;
 mod settings;
@@ -19,7 +20,7 @@ fn main() {
         .with_assets(Assets)
         .run(|cx: &mut App| {
             theme::install(cx);
-            theme::install_component_theme(cx, None);
+            theme::install_component_theme(cx);
 
             let bounds = Bounds::centered(None, size(px(1040.), px(700.)), cx);
             gpui_kit::open_window(
