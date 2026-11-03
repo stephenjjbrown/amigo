@@ -1,8 +1,14 @@
 //! An asset source for the app's bundled SVGs. GPUI resolves `svg()` paths
 //! through this, so icons live next to the binary rather than on disk.
+//!
+//! There is one global asset source, so ours must also answer for the kit's
+//! icons: gpui-component draws its dropdown carets, checkbox ticks and other
+//! `IconName`s from `gpui_kit::assets`. Without the fallback those render as
+//! nothing at all.
 
 use std::borrow::Cow;
 
+use gpui_kit::assets::Assets as KitAssets;
 use gpui_kit::{AssetSource, Result, SharedString};
 
 const ICONS: &[(&str, &[u8])] = &[
@@ -56,17 +62,19 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        Ok(ICONS
-            .iter()
-            .find(|(name, _)| *name == path)
-            .map(|(_, bytes)| Cow::Borrowed(*bytes)))
+        if let Some((_, bytes)) = ICONS.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(*bytes)));
+        }
+        KitAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Ok(ICONS
+        let mut names: Vec<SharedString> = ICONS
             .iter()
             .filter(|(name, _)| name.starts_with(path))
             .map(|(name, _)| SharedString::from(*name))
-            .collect())
+            .collect();
+        names.extend(KitAssets.list(path)?);
+        Ok(names)
     }
 }
