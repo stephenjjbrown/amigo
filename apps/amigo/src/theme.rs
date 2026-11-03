@@ -1,46 +1,35 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
+//! Design tokens, carried over from the egui app so the rewrite looks the same.
 
-use eframe::egui::{
-    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Stroke, TextStyle, Visuals,
-};
+use std::borrow::Cow;
 
-/// Corner radii, so widgets do not invent their own.
+use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
+use gpui_kit::{px, rgb, rgba, App, Rgba, Window, WindowAppearance};
+
+/// Height of every interactive control: buttons, inputs, pickers.
+pub const CONTROL_HEIGHT: f32 = 32.0;
+
+#[allow(dead_code)] // tokens the port has not reached yet
 pub struct Radii {
-    /// Inner controls: buttons, inputs, small chips.
-    pub sm: u8,
-    /// Cards and grouped panels.
-    pub md: u8,
-    /// Window-level panels and dialogs.
-    pub lg: u8,
-    /// Fully rounded (badges).
-    pub pill: u8,
+    pub sm: f32,
+    pub md: f32,
+    pub lg: f32,
 }
 
 pub const RADIUS: Radii = Radii {
-    sm: 4,
-    md: 6,
-    lg: 8,
-    pill: 255,
+    sm: 4.0,
+    md: 6.0,
+    lg: 8.0,
 };
 
-/// Type scale. Sizes are in points.
+#[allow(dead_code)] // tokens the port has not reached yet
 pub struct TypeScale {
-    /// Section labels in upper case.
     pub micro: f32,
-    /// Faint helper text.
     pub caption: f32,
-    /// Compact controls and chips.
     pub small: f32,
-    /// Default interface text.
     pub body: f32,
-    /// Pane and group headings.
     pub heading: f32,
-    /// Text inside inputs and reading surfaces.
     pub large: f32,
-    /// Dialog titles and translated text.
     pub title: f32,
-    /// The app name.
     pub display: f32,
 }
 
@@ -55,260 +44,210 @@ pub const TYPE: TypeScale = TypeScale {
     display: 20.0,
 };
 
-/// Height of every interactive control: buttons, text inputs, pickers,
-/// segmented controls. Text inside is centred, so a single height is what keeps
-/// a row of mixed controls on one baseline.
-pub const CONTROL_HEIGHT: f32 = 32.0;
-
-/// Horizontal inset inside a control. Buttons use it through `button_padding`;
-/// inputs pass it as their text margin so labels line up across the two.
-pub const CONTROL_PADDING: i8 = 12;
-
-const SEMIBOLD: &str = "semibold";
-
-/// Semibold face of the interface font, for titles and emphasis.
-pub fn semibold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
-}
-
 #[derive(Clone, Copy)]
+#[allow(dead_code)] // tokens the port has not reached yet
 pub struct Palette {
     pub dark: bool,
-    pub bg: Color32,
-    pub surface: Color32,
-    pub surface_muted: Color32,
-    pub surface_strong: Color32,
-    pub border: Color32,
-    pub border_strong: Color32,
-    pub text: Color32,
-    pub text_secondary: Color32,
-    pub text_muted: Color32,
-    pub text_faint: Color32,
-    pub accent: Color32,
-    pub accent_soft: Color32,
-    /// Fill and text for primary actions.
-    pub primary: Color32,
-    pub primary_contrast: Color32,
-    pub danger: Color32,
-    pub danger_soft: Color32,
-    pub danger_border: Color32,
-    pub success: Color32,
-    /// Background wash for inserted text in a diff.
-    pub success_soft: Color32,
-    pub warning: Color32,
+    pub bg: Rgba,
+    pub surface: Rgba,
+    pub surface_muted: Rgba,
+    pub surface_strong: Rgba,
+    pub border: Rgba,
+    pub border_strong: Rgba,
+    pub text: Rgba,
+    pub text_secondary: Rgba,
+    pub text_muted: Rgba,
+    pub text_faint: Rgba,
+    pub accent: Rgba,
+    pub primary: Rgba,
+    pub primary_contrast: Rgba,
+    pub danger: Rgba,
+    pub danger_soft: Rgba,
+    pub danger_border: Rgba,
+    pub success: Rgba,
+    pub success_soft: Rgba,
+    pub warning: Rgba,
 }
 
 impl Palette {
-    pub fn for_theme(dark: bool) -> Self {
-        if dark {
-            Self {
-                dark,
-                bg: Color32::from_rgb(0x13, 0x14, 0x17),
-                surface: Color32::from_rgb(0x1d, 0x1f, 0x24),
-                surface_muted: Color32::from_rgb(0x19, 0x1b, 0x20),
-                surface_strong: Color32::from_rgb(0x26, 0x28, 0x2e),
-                border: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
-                border_strong: Color32::from_rgba_unmultiplied(255, 255, 255, 40),
-                text: Color32::from_rgb(0xee, 0xf1, 0xf6),
-                text_secondary: Color32::from_rgb(0xb6, 0xbd, 0xc9),
-                text_muted: Color32::from_rgb(0x8d, 0x95, 0xa3),
-                text_faint: Color32::from_rgb(0x6b, 0x73, 0x80),
-                accent: Color32::from_rgb(0x4c, 0x9b, 0xff),
-                accent_soft: Color32::from_rgba_unmultiplied(76, 155, 255, 36),
-                primary: Color32::from_rgb(0x4a, 0xde, 0x80),
-                primary_contrast: Color32::from_rgb(0x06, 0x1a, 0x0f),
-                danger: Color32::from_rgb(0xff, 0x8d, 0x82),
-                danger_soft: Color32::from_rgba_unmultiplied(180, 35, 24, 40),
-                danger_border: Color32::from_rgba_unmultiplied(255, 141, 130, 76),
-                success: Color32::from_rgb(0x4a, 0xde, 0x80),
-                success_soft: Color32::from_rgba_unmultiplied(74, 222, 128, 34),
-                warning: Color32::from_rgb(0xf0, 0xb4, 0x5a),
-            }
-        } else {
-            Self {
-                dark,
-                bg: Color32::from_rgb(0xed, 0xf0, 0xf5),
-                surface: Color32::from_rgb(0xff, 0xff, 0xff),
-                surface_muted: Color32::from_rgb(0xf6, 0xf7, 0xfa),
-                surface_strong: Color32::from_rgb(0xec, 0xef, 0xf4),
-                border: Color32::from_rgba_unmultiplied(15, 23, 42, 23),
-                border_strong: Color32::from_rgba_unmultiplied(15, 23, 42, 41),
-                text: Color32::from_rgb(0x10, 0x18, 0x28),
-                text_secondary: Color32::from_rgb(0x47, 0x54, 0x67),
-                text_muted: Color32::from_rgb(0x66, 0x70, 0x85),
-                text_faint: Color32::from_rgb(0x98, 0xa2, 0xb3),
-                accent: Color32::from_rgb(0x0f, 0x3d, 0x63),
-                accent_soft: Color32::from_rgba_unmultiplied(15, 61, 99, 20),
-                primary: Color32::from_rgb(0x06, 0x76, 0x47),
-                primary_contrast: Color32::from_rgb(0xff, 0xff, 0xff),
-                danger: Color32::from_rgb(0xb4, 0x23, 0x18),
-                danger_soft: Color32::from_rgb(0xfe, 0xf3, 0xf2),
-                danger_border: Color32::from_rgba_unmultiplied(180, 35, 24, 56),
-                success: Color32::from_rgb(0x06, 0x76, 0x47),
-                success_soft: Color32::from_rgba_unmultiplied(6, 118, 71, 26),
-                warning: Color32::from_rgb(0xb5, 0x47, 0x08),
-            }
+    pub fn for_appearance(appearance: WindowAppearance) -> Self {
+        match appearance {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
+            _ => Self::light(),
         }
     }
 
-    fn visuals(self) -> Visuals {
-        let mut visuals = if self.dark {
-            Visuals::dark()
-        } else {
-            Visuals::light()
-        };
+    fn dark() -> Self {
+        Self {
+            dark: true,
+            bg: rgb(0x131417),
+            surface: rgb(0x1d1f24),
+            surface_muted: rgb(0x191b20),
+            surface_strong: rgb(0x26282e),
+            border: rgba(0xffffff14),
+            border_strong: rgba(0xffffff28),
+            text: rgb(0xeef1f6),
+            text_secondary: rgb(0xb6bdc9),
+            text_muted: rgb(0x8d95a3),
+            text_faint: rgb(0x6b7380),
+            accent: rgb(0x4c9bff),
+            primary: rgb(0x4ade80),
+            primary_contrast: rgb(0x061a0f),
+            danger: rgb(0xff8d82),
+            danger_soft: rgba(0xb4231828),
+            danger_border: rgba(0xff8d824c),
+            success: rgb(0x4ade80),
+            success_soft: rgba(0x4ade8022),
+            warning: rgb(0xf0b45a),
+        }
+    }
 
-        visuals.override_text_color = Some(self.text);
-        visuals.weak_text_alpha = 0.35;
-        visuals.panel_fill = self.bg;
-        visuals.window_fill = self.surface;
-        visuals.extreme_bg_color = self.surface_muted;
-        visuals.faint_bg_color = self.surface_muted;
-        visuals.code_bg_color = self.surface_muted;
-        visuals.window_stroke = Stroke::new(1.0_f32, self.border_strong);
-        visuals.window_corner_radius = CornerRadius::same(RADIUS.lg);
-        visuals.menu_corner_radius = CornerRadius::same(RADIUS.sm);
-        visuals.selection.bg_fill = self.accent_soft;
-        visuals.selection.stroke = Stroke::new(1.0_f32, self.accent);
-        visuals.hyperlink_color = self.accent;
-
-        // Only text fields and the translation output are selectable.
-
-        visuals.widgets.noninteractive.corner_radius = CornerRadius::same(RADIUS.md);
-        visuals.widgets.inactive.corner_radius = CornerRadius::same(RADIUS.sm);
-        visuals.widgets.hovered.corner_radius = CornerRadius::same(RADIUS.sm);
-        visuals.widgets.active.corner_radius = CornerRadius::same(RADIUS.sm);
-        visuals.widgets.open.corner_radius = CornerRadius::same(RADIUS.sm);
-
-        visuals.widgets.noninteractive.bg_fill = self.surface;
-        visuals.widgets.noninteractive.weak_bg_fill = self.surface;
-        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, self.border);
-        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, self.text);
-
-        visuals.widgets.inactive.weak_bg_fill = self.surface_muted;
-        visuals.widgets.inactive.bg_fill = self.surface_muted;
-        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, self.border);
-        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, self.text_secondary);
-
-        visuals.widgets.hovered.weak_bg_fill = self.surface_strong;
-        visuals.widgets.hovered.bg_fill = self.surface_strong;
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, self.border_strong);
-        visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, self.text);
-
-        visuals.widgets.active.weak_bg_fill = self.surface_strong;
-        visuals.widgets.active.bg_fill = self.surface_strong;
-        visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, self.accent);
-        visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, self.text);
-
-        visuals.widgets.open.weak_bg_fill = self.surface_strong;
-        visuals.widgets.open.bg_fill = self.surface_strong;
-        visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, self.border_strong);
-        visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, self.text);
-
-        visuals
+    fn light() -> Self {
+        Self {
+            dark: false,
+            bg: rgb(0xedf0f5),
+            surface: rgb(0xffffff),
+            surface_muted: rgb(0xf6f7fa),
+            surface_strong: rgb(0xecf0f4),
+            border: rgba(0x0f172a17),
+            border_strong: rgba(0x0f172a29),
+            text: rgb(0x101828),
+            text_secondary: rgb(0x475467),
+            text_muted: rgb(0x667085),
+            text_faint: rgb(0x98a2b3),
+            accent: rgb(0x0f3d63),
+            primary: rgb(0x067647),
+            primary_contrast: rgb(0xffffff),
+            danger: rgb(0xb42318),
+            danger_soft: rgb(0xfef3f2),
+            danger_border: rgba(0xb4231838),
+            success: rgb(0x067647),
+            success_soft: rgba(0x0676471a),
+            warning: rgb(0xb54708),
+        }
     }
 }
 
-/// A window-level panel, such as the source pane.
-pub fn panel_frame(palette: &Palette) -> Frame {
-    Frame::new()
-        .fill(palette.surface)
-        .stroke(Stroke::new(1.0_f32, palette.border))
-        .corner_radius(CornerRadius::same(RADIUS.lg))
+/// Register the Interface font, as the egui app did, so type and metrics match.
+pub fn install(cx: &mut App) {
+    const INTER_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+    const INTER_SEMIBOLD: &[u8] = include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf");
+
+    let _ = cx.text_system().add_fonts(vec![
+        Cow::Borrowed(INTER_REGULAR),
+        Cow::Borrowed(INTER_SEMIBOLD),
+    ]);
 }
 
-/// A card inside a pane, such as one translation result.
-pub fn card_frame(palette: &Palette) -> Frame {
-    Frame::new()
-        .fill(palette.surface)
-        .stroke(Stroke::new(1.0_f32, palette.border))
-        .corner_radius(CornerRadius::same(RADIUS.md))
+/// Install gpui-component's theme from our palette, so the crate's controls and
+/// our own surfaces share one set of colours. Heights come from `Size::Medium`
+/// (32px), which is our control height, so nothing needs pinning.
+pub fn install_component_theme(cx: &mut App, window: Option<&mut Window>) {
+    gpui_kit::init(cx);
+
+    let appearance = match window.as_ref() {
+        Some(window) => window.appearance(),
+        None => cx.window_appearance(),
+    };
+
+    // Everything the components read must go through `Theme::update`: it is what
+    // reconciles the derived token set with the colours. Assigning `colors`
+    // through `global_mut` leaves the tokens on the default theme, which shows up
+    // as foreign palette colours and black text on our dark surfaces.
+    Theme::update(cx, |theme| {
+        theme.font_family = "Inter".into();
+        theme.font_size = px(16.0);
+        theme.radius = px(RADIUS.sm);
+        theme.radius_lg = px(RADIUS.lg);
+        theme.shadow = true;
+    });
+
+    Theme::change(ThemeMode::from(appearance), window, cx);
+
+    // Applied after the mode resolves, because `Theme::colors` is the active
+    // palette while the per-mode `ThemeConfig` uses its own colour type.
+    let palette = Palette::for_appearance(appearance);
+    Theme::update(cx, |theme| {
+        theme.colors = colors(&palette);
+    });
 }
 
-/// A nested control group on a muted surface.
-pub fn inset_frame(palette: &Palette) -> Frame {
-    Frame::new()
-        .fill(palette.surface_muted)
-        .stroke(Stroke::new(1.0_f32, palette.border))
-        .corner_radius(CornerRadius::same(RADIUS.sm))
-}
+/// Map our palette onto the crate's semantic tokens. Only the tokens our screens
+/// use today are set; the rest keep the crate's defaults until a component needs
+/// them.
+///
+/// `ThemeColor` is `#[non_exhaustive]`, so it cannot be built with a struct
+/// literal from here — hence the field-by-field assignment.
+#[allow(clippy::field_reassign_with_default)]
+fn colors(palette: &Palette) -> ThemeColor {
+    let mut colors = ThemeColor::default();
 
-pub fn apply(ctx: &egui::Context) {
-    install_fonts(ctx);
-    ctx.set_theme(egui::ThemePreference::System);
+    colors.background = palette.bg.into();
+    colors.foreground = palette.text.into();
+    colors.border = palette.border.into();
+    colors.muted = palette.surface_muted.into();
+    colors.muted_foreground = palette.text_muted.into();
+    colors.popover = palette.surface.into();
+    colors.popover_foreground = palette.text.into();
+    colors.overlay = rgba(0x00000080).into();
+    colors.window_border = palette.border.into();
+    colors.title_bar = palette.surface.into();
+    colors.title_bar_border = palette.border.into();
+    colors.sidebar = palette.surface_muted.into();
+    colors.sidebar_border = palette.border.into();
+    colors.sidebar_foreground = palette.text_secondary.into();
+    colors.caret = palette.text.into();
+    colors.selection = palette.surface_strong.into();
+    colors.ring = palette.accent.into();
+    colors.scrollbar_thumb = palette.border_strong.into();
+    colors.scrollbar_thumb_hover = palette.text_faint.into();
 
-    let light = Palette::for_theme(false);
-    let dark = Palette::for_theme(true);
+    // Primary actions.
+    colors.primary = palette.primary.into();
+    colors.primary_foreground = palette.primary_contrast.into();
+    colors.primary_hover = palette.primary.into();
+    colors.primary_active = palette.primary.into();
+    colors.button_primary = palette.primary.into();
+    colors.button_primary_hover = palette.primary.into();
+    colors.button_primary_active = palette.primary.into();
+    colors.button_primary_foreground = palette.primary_contrast.into();
 
-    ctx.set_visuals_of(egui::Theme::Light, light.visuals());
-    ctx.set_visuals_of(egui::Theme::Dark, dark.visuals());
+    // Secondary buttons, which is what most controls in the app are.
+    colors.button = palette.surface_muted.into();
+    colors.button_hover = palette.surface_strong.into();
+    colors.button_active = palette.surface_strong.into();
+    colors.button_foreground = palette.text_secondary.into();
+    colors.secondary = palette.surface_muted.into();
+    colors.secondary_hover = palette.surface_strong.into();
+    colors.secondary_active = palette.surface_strong.into();
+    colors.secondary_foreground = palette.text_secondary.into();
 
-    for theme in [egui::Theme::Light, egui::Theme::Dark] {
-        ctx.style_mut_of(theme, |style| {
-            style.text_styles = text_styles();
-            style.interaction.selectable_labels = false;
-            style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-            style.spacing.button_padding = egui::vec2(f32::from(CONTROL_PADDING), 6.0);
-            // Menu items run edge to edge, so only the vertical padding is inset.
-            style.spacing.menu_margin = Margin {
-                left: 0,
-                right: 0,
-                top: 4,
-                bottom: 4,
-            };
-            // Widgets that take their height from here (combo boxes, sliders,
-            // check boxes, drag values) must match the buttons beside them.
-            style.spacing.interact_size.y = CONTROL_HEIGHT;
-        });
-    }
-}
+    // Destructive actions.
+    colors.button_danger = palette.danger_soft.into();
+    colors.button_danger_hover = palette.danger_border.into();
+    colors.button_danger_active = palette.danger_border.into();
+    colors.button_danger_foreground = palette.danger.into();
+    colors.danger = palette.danger.into();
+    colors.danger_foreground = palette.primary_contrast.into();
 
-/// Bundle Inter as the interface font, keeping egui's emoji fallbacks so no
-/// glyph (arrows, ×, ·) renders as a missing-glyph box.
-fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
+    // Inputs and lists.
+    colors.input = palette.surface_muted.into();
+    colors.list = palette.surface.into();
+    colors.list_hover = palette.surface_strong.into();
+    colors.list_active = palette.surface_strong.into();
+    colors.list_active_border = palette.border_strong.into();
+    colors.list_even = palette.surface.into();
 
-    fonts.font_data.insert(
-        "inter".to_owned(),
-        Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../../assets/fonts/Inter-Regular.ttf"
-        ))),
-    );
-    fonts.font_data.insert(
-        "inter-semibold".to_owned(),
-        Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../../assets/fonts/Inter-SemiBold.ttf"
-        ))),
-    );
+    colors.accent = palette.surface_strong.into();
+    colors.accent_foreground = palette.text.into();
+    colors.link = palette.accent.into();
+    colors.switch = palette.primary.into();
+    colors.switch_thumb = palette.primary_contrast.into();
+    colors.slider_bar = palette.surface_strong.into();
+    colors.slider_thumb = palette.primary.into();
+    colors.progress_bar = palette.primary.into();
+    colors.warning = palette.warning.into();
+    colors.success = palette.primary.into();
 
-    let proportional = fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default();
-    proportional.insert(0, "inter".to_owned());
-
-    let mut semibold_family = vec!["inter-semibold".to_owned()];
-    semibold_family.extend(
-        proportional
-            .iter()
-            .filter(|name| name.as_str() != "inter")
-            .cloned(),
-    );
-    fonts
-        .families
-        .insert(egui::FontFamily::Name(SEMIBOLD.into()), semibold_family);
-
-    ctx.set_fonts(fonts);
-}
-
-fn text_styles() -> BTreeMap<TextStyle, FontId> {
-    [
-        (TextStyle::Heading, semibold(TYPE.display)),
-        (TextStyle::Body, FontId::proportional(TYPE.large)),
-        (TextStyle::Button, FontId::proportional(TYPE.body)),
-        (TextStyle::Small, FontId::proportional(TYPE.caption)),
-        (TextStyle::Monospace, FontId::monospace(TYPE.small)),
-    ]
-    .into_iter()
-    .collect()
+    colors
 }

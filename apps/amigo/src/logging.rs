@@ -96,7 +96,7 @@ pub fn init() {
     let _ = log::set_logger(logger);
     log::set_max_level(log::LevelFilter::Debug);
 
-    log::info!("Amigo {} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("Amigo (gpui) {} starting", env!("CARGO_PKG_VERSION"));
     log::info!("log file: {}", logger.path.display());
 }
 

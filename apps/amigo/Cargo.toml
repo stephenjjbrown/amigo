@@ -11,15 +11,8 @@ path = "src/main.rs"
 [dependencies]
 deepl-core = { path = "../../crates/deepl-core" }
 deepl-engine = { path = "../../crates/deepl-engine" }
-eframe = { version = "0.32", default-features = false, features = [
-    "accesskit",
-    "default_fonts",
-    "persistence",
-    "wgpu",
-] }
-egui = "0.32"
-egui_extras = { version = "0.32", features = ["svg"] }
+# One dependency for GPUI, its platform layer and the component library. The kit
+# pins the compatible gpui snapshot and mounts a Root for us.
+gpui-kit = "0.8"
 log = { workspace = true }
 serde = { workspace = true }
-# eframe's wgpu feature does not select a backend; enable Metal on macOS.
-wgpu = { version = "25", features = ["metal"] }

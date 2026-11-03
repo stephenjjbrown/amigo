@@ -4,7 +4,6 @@
 //! This lives beside the engine rather than in a UI crate so both front ends share
 //! one definition, one file format and one set of migration rules.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -18,9 +17,6 @@ pub const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
 pub const DEFAULT_MULTI_TOP_P: f32 = 0.95;
 
 const CONFIG_FILE: &str = "preferences.json";
-/// eframe's storage file from the egui build, read once so existing installs keep
-/// their providers and presets.
-const LEGACY_CONFIG_FILE: &str = "app.ron";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TranslationMode {
@@ -320,8 +316,7 @@ impl Preferences {
                 prefs
             }
             None => {
-                // First launch of this build: import the egui app's settings once.
-                let mut prefs = load_legacy_ron().unwrap_or_default();
+                let mut prefs = Preferences::default();
                 prefs.migrate();
                 prefs.save();
                 prefs
@@ -355,16 +350,6 @@ pub fn config_path() -> PathBuf {
 fn load_from(path: &PathBuf) -> Option<Preferences> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
-}
-
-/// eframe's `Storage` writes a RON map of string keys to RON strings, so the
-/// preferences are one level of encoding deeper than they look.
-fn load_legacy_ron() -> Option<Preferences> {
-    let text =
-        std::fs::read_to_string(crate::session_store::support_dir().join(LEGACY_CONFIG_FILE))
-            .ok()?;
-    let map: BTreeMap<String, String> = ron::from_str(&text).ok()?;
-    ron::from_str(map.get("preferences")?).ok()
 }
 
 fn default_variants() -> usize {
@@ -405,30 +390,12 @@ mod tests {
         assert_eq!(back.presets[0].name, "European");
     }
 
-    /// Reads the developer's real eframe settings, so it is opt-in.
     #[test]
-    #[ignore = "reads the local settings file"]
-    fn real_legacy_ron_imports() {
-        let prefs = load_legacy_ron().expect("no legacy settings to read");
-        assert!(!prefs.providers.is_empty());
-        eprintln!(
-            "imported {} providers, {} presets",
-            prefs.providers.len(),
-            prefs.presets.len()
-        );
-    }
-
-    #[test]
-    fn legacy_ron_imports_providers() {
-        // Shaped like eframe's file: a map of keys to RON strings.
-        let inner = r#"(providers:[(id:1,kind:Ollama,pair:(source:English,target:PortugueseBrazil),model:Gemma4Cloud,mode:Multi,diff_view:true,hide_deletions:true,register:Conversational,context:"Conversation between friends",variants:10,temperature:1.9,top_p:0.95)],presets:[],next_slot_id:2,verbose_logging:false,local_parallel:1,cloud_parallel:3,deepl_pair:(source:English,target:PortuguesePortugal),ollama_pair:(source:English,target:PortuguesePortugal),deepl_enabled:true,ollama_enabled:false,ollama_model:Gemma4Cloud,register:Conversational)"#;
-        let file = format!("{{\"preferences\": {:?}}}", inner);
-        let map: BTreeMap<String, String> = ron::from_str(&file).unwrap();
-        let prefs: Preferences = ron::from_str(map.get("preferences").unwrap()).unwrap();
-
-        assert_eq!(prefs.providers.len(), 1);
-        assert_eq!(prefs.providers[0].model, OllamaModel::Gemma4Cloud);
-        assert_eq!(prefs.providers[0].variants, 10);
-        assert!(prefs.providers[0].hide_deletions);
+    fn applying_a_preset_rekeys_provider_ids() {
+        let mut prefs = Preferences::default();
+        prefs.save_preset("one");
+        assert!(prefs.apply_preset(0));
+        assert_eq!(prefs.providers[0].id, 1);
+        assert_eq!(prefs.next_slot_id, 2);
     }
 }

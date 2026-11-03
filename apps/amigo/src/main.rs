@@ -1,26 +1,42 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 mod app;
-mod icons;
+mod assets;
+mod dialogs;
 mod logging;
+mod provider;
+mod settings;
 mod theme;
+mod ui;
 
-use app::AmigoApp;
+use assets::Assets;
+use gpui_kit::{
+    px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions,
+};
 
-fn main() -> eframe::Result<()> {
+fn main() {
     logging::init();
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1040.0, 700.0])
-            .with_min_inner_size([780.0, 540.0])
-            .with_title("Amigo"),
-        ..Default::default()
-    };
+    gpui_kit::application()
+        .with_assets(Assets)
+        .run(|cx: &mut App| {
+            theme::install(cx);
+            theme::install_component_theme(cx, None);
 
-    eframe::run_native(
-        "Amigo",
-        options,
-        Box::new(|cc| Ok(Box::new(AmigoApp::new(cc)))),
-    )
+            let bounds = Bounds::centered(None, size(px(1040.), px(700.)), cx);
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(780.), px(540.))),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Amigo".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| cx.new(|cx| app::AmigoApp::new(window, cx)),
+            )
+            .expect("could not open a window");
+
+            cx.activate(true);
+        });
 }

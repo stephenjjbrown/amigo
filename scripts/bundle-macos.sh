@@ -1,40 +1,16 @@
 #!/usr/bin/env bash
-# Build a double-clickable macOS .app bundle from a Rust binary.
-#
-#   ./scripts/bundle-macos.sh        # the egui build  -> dist/Amigo.app
-#   ./scripts/bundle-macos.sh gpui   # the GPUI port   -> dist/Amigo GPUI.app
-#
-# Both bundles use the same icon and the same storage directory, so they can be
-# compared side by side while the port is finished.
+# Build a double-clickable macOS .app bundle from the Rust binary.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-TARGET="${1:-egui}"
-case "$TARGET" in
-  egui)
-    PACKAGE="amigo"
-    BIN="amigo"
-    APP_NAME="Amigo"
-    BUNDLE_ID="com.stephen.amigo"
-    ;;
-  gpui)
-    PACKAGE="amigo-gpui"
-    BIN="amigo-gpui"
-    APP_NAME="Amigo GPUI"
-    BUNDLE_ID="com.stephen.amigo.gpui"
-    ;;
-  *)
-    echo "usage: $0 [egui|gpui]" >&2
-    exit 1
-    ;;
-esac
-
-cargo build --release -p "$PACKAGE"
-
+APP_NAME="Amigo"
+BIN="amigo"
 APP_DIR="$ROOT/dist/$APP_NAME.app"
 CONTENTS="$APP_DIR/Contents"
+
+cargo build --release -p amigo
 
 rm -rf "$APP_DIR"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
@@ -51,7 +27,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
-  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleIdentifier</key><string>com.stephen.amigo</string>
   <key>CFBundleVersion</key><string>0.1.0</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
