@@ -1190,6 +1190,7 @@ dependencies = [
 name = "deepl-engine"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "deepl-core",
  "log",
  "reqwest",

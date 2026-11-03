@@ -1,6 +1,10 @@
 //! Command engine: owns the provider clients and OAuth session, and runs on its
-//! own thread. The UI only sends commands and polls events, so network and
-//! browser sign-in never block a frame.
+//! own thread. The UI sends commands and awaits events, so network and browser
+//! sign-in never block a frame.
+//!
+//! Events travel over an `async_channel`, so an awaiting task wakes when the
+//! engine reports; nothing has to poll, and the engine knows nothing about the
+//! UI beyond the event type.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -8,13 +12,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use async_channel::{Receiver as EventReceiver, Sender as EventSender};
+
 use deepl_core::{
     fetch_status, is_supported_pair, mcp, session_store, ApiError, ErrorKind, Language, McpClient,
     McpSession, OllamaClient, OllamaStatus, Provider, Register, Sampling, SessionStatus,
     Translation, MAX_TRANSLATION_CHARS,
 };
-
-pub type RepaintCallback = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -69,14 +73,14 @@ pub enum Event {
 
 pub struct Engine {
     commands: Sender<Command>,
-    events: Receiver<Event>,
+    events: EventReceiver<Event>,
     cancel_sign_in: Arc<AtomicBool>,
 }
 
 impl Engine {
-    pub fn spawn(notify: RepaintCallback) -> Self {
+    pub fn spawn() -> Self {
         let (command_tx, command_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = async_channel::unbounded();
         let cancel_sign_in = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel_sign_in.clone();
 
@@ -90,10 +94,9 @@ impl Engine {
                 {
                     Ok(http) => http,
                     Err(error) => {
-                        let _ = event_tx.send(Event::Fatal(ApiError::network(format!(
+                        let _ = event_tx.send_blocking(Event::Fatal(ApiError::network(format!(
                             "Could not start the HTTP client: {error}"
                         ))));
-                        notify();
                         return;
                     }
                 };
@@ -104,7 +107,7 @@ impl Engine {
                     client: None,
                     cancel_sign_in: worker_cancel,
                 }
-                .run(command_rx, event_tx, notify);
+                .run(command_rx, event_tx);
             })
             .expect("failed to spawn the translation engine thread");
 
@@ -125,8 +128,10 @@ impl Engine {
         self.cancel_sign_in.store(true, Ordering::SeqCst);
     }
 
-    pub fn try_recv(&self) -> Option<Event> {
-        self.events.try_recv().ok()
+    /// A handle a task can await, one event at a time. Receivers are cloneable,
+    /// so callers may keep one while the engine stays owned elsewhere.
+    pub fn events(&self) -> EventReceiver<Event> {
+        self.events.clone()
     }
 }
 
@@ -138,14 +143,13 @@ struct Worker {
 }
 
 impl Worker {
-    fn run(mut self, commands: Receiver<Command>, events: Sender<Event>, notify: RepaintCallback) {
+    fn run(mut self, commands: Receiver<Command>, events: EventSender<Event>) {
         while let Ok(command) = commands.recv() {
-            self.handle(command, &events, &notify);
-            notify();
+            self.handle(command, &events);
         }
     }
 
-    fn handle(&mut self, command: Command, events: &Sender<Event>, notify: &RepaintCallback) {
+    fn handle(&mut self, command: Command, events: &EventSender<Event>) {
         match command {
             Command::LoadSession => {
                 let result = self.load_session();
@@ -153,19 +157,18 @@ impl Worker {
                     Ok(status) => log::info!("session loaded: signed_in={}", status.signed_in),
                     Err(error) => log::warn!("session load failed: {error}"),
                 }
-                let _ = events.send(Event::SessionLoaded(result));
+                let _ = events.send_blocking(Event::SessionLoaded(result));
             }
             Command::SignIn => {
                 self.cancel_sign_in.store(false, Ordering::SeqCst);
                 log::info!("sign-in started");
-                let _ = events.send(Event::SignInStarted);
-                notify();
+                let _ = events.send_blocking(Event::SignInStarted);
                 let result = self.sign_in();
                 match &result {
                     Ok(_) => log::info!("sign-in completed"),
                     Err(error) => log::warn!("sign-in failed: {error}"),
                 }
-                let _ = events.send(Event::SignedIn(result));
+                let _ = events.send_blocking(Event::SignedIn(result));
             }
             Command::SignOut => {
                 log::info!("sign-out requested");
@@ -174,7 +177,7 @@ impl Worker {
                     Ok(_) => log::info!("signed out"),
                     Err(error) => log::warn!("sign-out failed: {error}"),
                 }
-                let _ = events.send(Event::SignedOut(result));
+                let _ = events.send_blocking(Event::SignedOut(result));
             }
             Command::LoadOllamaStatus => {
                 let result = self.ollama_status();
@@ -186,7 +189,7 @@ impl Worker {
                     ),
                     Err(error) => log::warn!("Ollama status check failed: {error}"),
                 }
-                let _ = events.send(Event::OllamaStatus(result));
+                let _ = events.send_blocking(Event::OllamaStatus(result));
             }
             Command::Translate {
                 request_id,
@@ -252,14 +255,13 @@ impl Worker {
                         ),
                     }
 
-                    let _ = events.send(Event::ProviderTranslation {
+                    let _ = events.send_blocking(Event::ProviderTranslation {
                         request_id,
                         slot_id,
                         provider,
                         result,
                         elapsed_ms,
                     });
-                    notify();
                 }
             }
         }
