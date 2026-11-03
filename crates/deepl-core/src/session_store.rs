@@ -21,6 +21,11 @@ const MCP_CLIENT_FILE: &str = "mcp-client.json";
 /// preferences directory from the application name, so the two must agree.
 const APP_DIR: &str = "Amigo";
 
+/// The app's support directory, shared with the preference file.
+pub fn support_dir() -> PathBuf {
+    store_dir()
+}
+
 fn store_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use deepl_core::config::{same_providers, Preferences, Preset, ProviderSlot, TranslationMode};
 use deepl_core::{
     allowed_targets_for, swap_pair, target_for_source_with, ApiError, ErrorKind, LangPair,
-    OllamaModel, OllamaStatus, Provider, Register, Sampling, SessionStatus, Translation,
-    MAX_PARALLEL_LIMIT, MAX_TRANSLATION_CHARS, MAX_VARIANTS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
+    OllamaModel, OllamaStatus, Provider, Register, SessionStatus, Translation, MAX_PARALLEL_LIMIT,
+    MAX_TRANSLATION_CHARS, MAX_VARIANTS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
 };
 use deepl_engine::{Command, Engine, Event, ProviderJob};
 use eframe::egui::{
@@ -13,18 +14,15 @@ use eframe::egui::{
     StrokeKind, TextEdit, Ui, Vec2, WidgetInfo, WidgetType,
 };
 
-use crate::diff::{self, DiffOp};
 use crate::icons::{self, Icon};
 use crate::theme::{
     card_frame, inset_frame, panel_frame, semibold, Palette, CONTROL_HEIGHT, CONTROL_PADDING,
     RADIUS, TYPE,
 };
+use deepl_core::diff::{self, DiffOp};
 
 const MAX_CONTENT_WIDTH: f32 = 1240.0;
 const STACKED_LAYOUT_THRESHOLD: f32 = 760.0;
-const DEFAULT_VARIANTS: usize = 5;
-const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
-const DEFAULT_MULTI_TOP_P: f32 = 0.95;
 
 /// Provider dialog size, fixed rather than fitted to its content.
 ///
@@ -35,107 +33,6 @@ const DEFAULT_MULTI_TOP_P: f32 = 0.95;
 /// (Multi, with its three sliders) and Single mode simply has some empty space.
 /// Revisit with an eframe upgrade.
 const PROVIDER_DIALOG_SIZE: Vec2 = Vec2::new(470.0, 760.0);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-enum TranslationMode {
-    #[default]
-    Single,
-    Multi,
-}
-
-impl TranslationMode {}
-
-/// One configured translation provider in the workspace. The app can hold any
-/// number of these, including several of the same kind.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-struct ProviderSlot {
-    id: u64,
-    kind: Provider,
-    #[serde(default)]
-    pair: LangPair,
-    #[serde(default)]
-    model: OllamaModel,
-    #[serde(default)]
-    mode: TranslationMode,
-    /// Present a multi translation as diffs against the most typical sample,
-    /// rather than as a flat list of samples.
-    #[serde(default = "default_true")]
-    diff_view: bool,
-    /// In the diff view, hide the struck-out removals and show only the result.
-    #[serde(default)]
-    hide_deletions: bool,
-    #[serde(default)]
-    register: Register,
-    /// Situational context appended to this provider's prompt.
-    #[serde(default)]
-    context: String,
-    #[serde(default = "default_variants")]
-    variants: usize,
-    #[serde(default = "default_multi_temperature")]
-    temperature: f32,
-    #[serde(default = "default_multi_top_p")]
-    top_p: f32,
-}
-
-impl Default for ProviderSlot {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            kind: Provider::Ollama,
-            pair: LangPair::default(),
-            model: OllamaModel::default(),
-            mode: TranslationMode::Single,
-            diff_view: true,
-            hide_deletions: false,
-            register: Register::default(),
-            context: String::new(),
-            variants: DEFAULT_VARIANTS,
-            temperature: DEFAULT_MULTI_TEMPERATURE,
-            top_p: DEFAULT_MULTI_TOP_P,
-        }
-    }
-}
-
-impl ProviderSlot {
-    /// Whether two slots describe the same provider configuration. The `id` is
-    /// runtime identity — loading a preset re-keys it — so it is not part of the
-    /// comparison.
-    fn same_configuration(&self, other: &Self) -> bool {
-        self.kind == other.kind
-            && self.pair == other.pair
-            && self.model == other.model
-            && self.mode == other.mode
-            && self.diff_view == other.diff_view
-            && self.hide_deletions == other.hide_deletions
-            && self.register == other.register
-            && self.context == other.context
-            && self.variants == other.variants
-            && self.temperature == other.temperature
-            && self.top_p == other.top_p
-    }
-
-    fn context(&self) -> Option<&str> {
-        let context = self.context.trim();
-        (!context.is_empty()).then_some(context)
-    }
-
-    fn sampling(&self) -> Sampling {
-        match self.mode {
-            TranslationMode::Single => Sampling::default(),
-            TranslationMode::Multi => Sampling {
-                temperature: self.temperature,
-                top_p: self.top_p,
-            },
-        }
-    }
-
-    fn count(&self) -> usize {
-        match self.mode {
-            TranslationMode::Single => 1,
-            TranslationMode::Multi => self.variants.clamp(1, MAX_VARIANTS),
-        }
-    }
-}
 
 #[derive(Clone)]
 enum PendingDelete {
@@ -157,217 +54,12 @@ struct PresetDialog {
     name: String,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct Preset {
-    name: String,
-    #[serde(default)]
-    providers: Vec<ProviderSlot>,
-}
-
 /// What the preset picker asked the top bar to do this frame.
 enum PresetAction {
     Load(usize),
     Rename(usize),
     Delete(usize),
     SaveNew,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct Preferences {
-    #[serde(default)]
-    providers: Vec<ProviderSlot>,
-    /// Saved provider sets the user can switch between.
-    #[serde(default)]
-    presets: Vec<Preset>,
-    #[serde(default)]
-    next_slot_id: u64,
-    #[serde(default)]
-    verbose_logging: bool,
-    #[serde(default = "default_local_parallel")]
-    local_parallel: usize,
-    #[serde(default = "default_cloud_parallel")]
-    cloud_parallel: usize,
-
-    // Legacy single-provider layout. Read once so existing installs migrate
-    // their DeepL/Ollama setup into the provider list.
-    #[serde(rename = "deepl_pair", default, alias = "pair")]
-    legacy_deepl_pair: LangPair,
-    #[serde(rename = "ollama_pair", default)]
-    legacy_ollama_pair: LangPair,
-    #[serde(rename = "deepl_enabled", default = "default_true")]
-    legacy_deepl_enabled: bool,
-    #[serde(rename = "ollama_enabled", default)]
-    legacy_ollama_enabled: bool,
-    #[serde(rename = "ollama_model", default)]
-    legacy_ollama_model: OllamaModel,
-    #[serde(rename = "register", default)]
-    legacy_register: Register,
-}
-
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            providers: vec![ProviderSlot {
-                id: 1,
-                kind: Provider::DeepL,
-                ..ProviderSlot::default()
-            }],
-            next_slot_id: 2,
-            presets: Vec::new(),
-            verbose_logging: false,
-            local_parallel: default_local_parallel(),
-            cloud_parallel: default_cloud_parallel(),
-            legacy_deepl_pair: LangPair::default(),
-            legacy_ollama_pair: LangPair::default(),
-            legacy_deepl_enabled: true,
-            legacy_ollama_enabled: false,
-            legacy_ollama_model: OllamaModel::default(),
-            legacy_register: Register::default(),
-        }
-    }
-}
-
-impl Preferences {
-    /// Rebuild the provider list from the pre-multi-provider layout.
-    fn migrate(&mut self) {
-        if !self.providers.is_empty() {
-            let highest = self.providers.iter().map(|slot| slot.id).max().unwrap_or(0);
-            if self.next_slot_id <= highest {
-                self.next_slot_id = highest + 1;
-            }
-            return;
-        }
-
-        let mut providers = Vec::new();
-        if self.legacy_deepl_enabled {
-            providers.push(ProviderSlot {
-                id: providers.len() as u64 + 1,
-                kind: Provider::DeepL,
-                pair: self.legacy_deepl_pair,
-                ..ProviderSlot::default()
-            });
-        }
-        if self.legacy_ollama_enabled {
-            providers.push(ProviderSlot {
-                id: providers.len() as u64 + 1,
-                kind: Provider::Ollama,
-                pair: self.legacy_ollama_pair,
-                model: self.legacy_ollama_model,
-                register: self.legacy_register,
-                ..ProviderSlot::default()
-            });
-        }
-
-        self.next_slot_id = providers.len() as u64 + 1;
-        self.providers = providers;
-    }
-
-    fn allocate_slot_id(&mut self) -> u64 {
-        let id = self.next_slot_id.max(1);
-        self.next_slot_id = id + 1;
-        id
-    }
-
-    /// Snapshot the current providers under `name`, replacing any preset that
-    /// already has that name.
-    fn save_preset(&mut self, name: &str) {
-        let name = name.trim();
-        if name.is_empty() || self.providers.is_empty() {
-            return;
-        }
-
-        let providers = self.providers.clone();
-        match self.presets.iter_mut().find(|preset| preset.name == name) {
-            Some(preset) => preset.providers = providers,
-            None => self.presets.push(Preset {
-                name: name.to_string(),
-                providers,
-            }),
-        }
-    }
-
-    /// Replace the current providers with a preset's, re-keying their ids so they
-    /// cannot collide with outcomes or with each other.
-    fn apply_preset(&mut self, index: usize) -> bool {
-        let Some(preset) = self.presets.get(index) else {
-            return false;
-        };
-        let providers = preset.providers.clone();
-        if providers.is_empty() {
-            return false;
-        }
-
-        self.providers = providers
-            .into_iter()
-            .enumerate()
-            .map(|(offset, mut slot)| {
-                slot.id = offset as u64 + 1;
-                slot
-            })
-            .collect();
-        self.next_slot_id = self.providers.len() as u64 + 1;
-        true
-    }
-
-    fn delete_preset(&mut self, index: usize) {
-        if index < self.presets.len() {
-            self.presets.remove(index);
-        }
-    }
-
-    /// Rename a preset. Fails on a blank name or one another preset already uses.
-    fn rename_preset(&mut self, index: usize, name: &str) -> bool {
-        let name = name.trim();
-        if name.is_empty() {
-            return false;
-        }
-        let taken = self
-            .presets
-            .iter()
-            .enumerate()
-            .any(|(other, preset)| other != index && preset.name == name);
-        if taken {
-            return false;
-        }
-
-        let Some(preset) = self.presets.get_mut(index) else {
-            return false;
-        };
-        preset.name = name.to_string();
-        true
-    }
-}
-
-fn same_providers(left: &[ProviderSlot], right: &[ProviderSlot]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(left, right)| left.same_configuration(right))
-}
-
-fn default_variants() -> usize {
-    DEFAULT_VARIANTS
-}
-
-fn default_multi_temperature() -> f32 {
-    DEFAULT_MULTI_TEMPERATURE
-}
-
-fn default_multi_top_p() -> f32 {
-    DEFAULT_MULTI_TOP_P
-}
-
-fn default_local_parallel() -> usize {
-    1
-}
-
-fn default_cloud_parallel() -> usize {
-    3
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -541,15 +233,6 @@ impl AmigoApp {
     }
 
     /// Concurrent request limit for a model, from the matching app setting.
-    fn parallel_for(&self, model: OllamaModel) -> usize {
-        let limit = if model.is_cloud() {
-            self.prefs.cloud_parallel
-        } else {
-            self.prefs.local_parallel
-        };
-        limit.clamp(1, MAX_PARALLEL_LIMIT)
-    }
-
     fn character_count(&self) -> usize {
         self.source_text.chars().count()
     }
@@ -808,7 +491,7 @@ impl AmigoApp {
                     context: slot.context().map(str::to_string),
                     sampling: slot.sampling(),
                     count: slot.count(),
-                    parallel: self.parallel_for(slot.model),
+                    parallel: self.prefs.parallel_for(slot.model),
                 },
             });
         }
@@ -3549,6 +3232,7 @@ fn menu_action(ui: &mut Ui, id: Id, rect: Rect, action: MenuAction, tooltip: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepl_core::config::{DEFAULT_MULTI_TEMPERATURE, DEFAULT_MULTI_TOP_P};
     use deepl_core::Language;
 
     fn legacy(deepl: bool, ollama: bool) -> Preferences {
@@ -3557,8 +3241,8 @@ mod tests {
             presets: Vec::new(),
             next_slot_id: 0,
             verbose_logging: false,
-            local_parallel: default_local_parallel(),
-            cloud_parallel: default_cloud_parallel(),
+            local_parallel: 1,
+            cloud_parallel: 3,
             legacy_deepl_pair: LangPair {
                 source: Language::English,
                 target: Language::Spanish,

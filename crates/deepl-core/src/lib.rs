@@ -1,4 +1,6 @@
 pub mod api;
+pub mod config;
+pub mod diff;
 pub mod error;
 pub mod mcp;
 pub mod ollama;
@@ -8,6 +10,8 @@ pub mod session_store;
 pub mod types;
 
 pub use api::{ApiClient, ApiMode, Translation, Usage};
+pub use config::{Preferences, Preset, ProviderSlot, TranslationMode};
+pub use diff::{DiffOp, Variant};
 pub use error::{ApiError, ErrorKind};
 pub use mcp::{McpClient, McpSession, SessionStatus, MCP_ENDPOINT, MCP_MAX_TEXT_CHARS};
 pub use ollama::{
