@@ -20,22 +20,24 @@
 mod state;
 mod windows;
 
-pub use state::{AppEvent, AppState, PromptAction, SlotOutcome};
+pub use state::{AppEvent, AppState, SlotOutcome};
 
 use deepl_core::config::ProviderSlot;
 use deepl_core::diff::{self, DiffOp};
-use deepl_core::{Provider, MAX_TRANSLATION_CHARS};
+use deepl_core::{
+    allowed_targets_for, Language, Provider, MAX_TRANSLATION_CHARS, SOURCE_LANGUAGES,
+};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::WindowHandle;
 use gpui_kit::{
-    div, px, Context, Div, Entity, IntoElement, SharedString, Subscription, WeakEntity, Window,
+    div, px, AnyElement, Context, Div, Entity, IntoElement, SharedString, Subscription, Window,
 };
 
-use crate::dialogs;
 use crate::format::{slot_subtitle, slot_title};
 use crate::provider;
 use crate::settings;
@@ -52,10 +54,6 @@ pub struct AmigoApp {
     source: Entity<TextareaState>,
     /// The settings window, if this app opened one.
     settings_window: Option<WindowHandle<settings::SettingsView>>,
-    /// The preset name prompt, if open.
-    prompt_window: Option<WindowHandle<dialogs::PromptDialog>>,
-    /// The preset delete confirmation, if open.
-    confirm_window: Option<WindowHandle<dialogs::ConfirmDialog>>,
     /// The provider dialog, if open.
     provider_window: Option<WindowHandle<provider::ProviderDialog>>,
     /// Kept alive so the state subscription stays active.
@@ -86,8 +84,6 @@ impl AmigoApp {
             state,
             source,
             settings_window: None,
-            prompt_window: None,
-            confirm_window: None,
             provider_window: None,
             _subscriptions: subscriptions,
         }
@@ -111,50 +107,110 @@ impl AmigoApp {
             .update(cx, |state, cx| state.copy(provider, index, cx));
     }
 
-    fn preset_picker(&mut self, palette: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let (presets, active, label) = {
+    /// The language pair of the provider in use. Presets are out of the UI for
+    /// now, so this is what sits in the top bar instead.
+    fn language_controls(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
+        let (kind, pair) = {
             let state = self.state.read(cx);
-            (
-                state.preset_choices(),
-                state.active_preset(),
-                state.preset_label(),
-            )
+            (state.selected_provider(), state.selected_pair())
         };
-        let palette = *palette;
-        let weak = cx.weak_entity();
-        let presets_entity = self.state.clone();
+        let enabled = kind.is_some();
+        let kind = kind.unwrap_or(Provider::DeepL);
+        let pair = pair.unwrap_or_default();
 
-        Button::new("preset-picker")
-            // `small()` gives compact type; the height is pinned to the control
-            // tier because the size ladder's own steps are 24/32/44.
+        let targets: Vec<Language> = allowed_targets_for(kind, pair.source).to_vec();
+
+        let swap = ui::circle_icon_button(
+            "swap-languages",
+            "icons/arrow-right-left.svg",
+            "Swap languages",
+            palette,
+        );
+        let swap = if enabled {
+            swap.on_click(cx.listener(|this, _, _window, cx| {
+                let state = this.state.clone();
+                state.update(cx, |state, cx| state.swap_languages(cx));
+            }))
+        } else {
+            swap.opacity(0.4)
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(ui::section_label("FROM", palette))
+            .child(self.language_picker(
+                "source-language",
+                170.0,
+                pair.source,
+                SOURCE_LANGUAGES,
+                enabled,
+                AppState::set_source_language,
+                palette,
+            ))
+            .child(swap)
+            .child(ui::section_label("TO", palette))
+            .child(self.language_picker(
+                "target-language",
+                170.0,
+                pair.target,
+                &targets,
+                enabled,
+                AppState::set_target_language,
+                palette,
+            ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn language_picker(
+        &self,
+        id: &str,
+        width: f32,
+        selected: Language,
+        options: &[Language],
+        enabled: bool,
+        apply: fn(&mut AppState, Language, &mut Context<AppState>),
+        palette: &Palette,
+    ) -> AnyElement {
+        let state = self.state.clone();
+        let labels: Vec<(Language, String)> = options
+            .iter()
+            .map(|language| (*language, language.label().to_string()))
+            .collect();
+
+        let button = Button::new(SharedString::from(id))
             .small()
-            .w(px(320.))
+            .w(px(width))
             .h(px(CONTROL_HEIGHT))
-            // Puts the label at the start and a caret at the end.
             .dropdown_caret(true)
-            .label(SharedString::from(label))
+            .label(SharedString::from(selected.label()));
+
+        if !enabled {
+            return button
+                .disabled(true)
+                .text_color(palette.text_faint)
+                .into_any_element();
+        }
+
+        button
+            .text_color(palette.text)
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu;
-                let weak = weak.clone();
-                let presets_entity = presets_entity.clone();
-
-                if presets.is_empty() {
-                    menu = menu.item(PopupMenuItem::new("No saved presets").disabled(true));
-                }
-
-                for (index, label) in &presets {
-                    let index = *index;
-                    let label = label.clone();
-                    let is_active = active == Some(index);
-                    let weak = weak.clone();
-                    let presets_entity = presets_entity.clone();
-
-                    menu = menu.item(PopupMenuItem::element(move |_window, _cx| {
-                        preset_row(index, &label, is_active, &weak, &presets_entity, &palette)
-                    }));
+                for (language, label) in &labels {
+                    let language = *language;
+                    let state = state.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(language == selected)
+                            .on_click(move |_, _window, cx| {
+                                state.update(cx, |state, cx| apply(state, language, cx));
+                            }),
+                    );
                 }
                 menu
             })
+            .into_any_element()
     }
 
     fn top_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
@@ -163,15 +219,7 @@ impl AmigoApp {
             .items_center()
             .gap(px(8.))
             .w_full()
-            .child(ui::section_label("PRESET", palette))
-            .child(self.preset_picker(palette, cx))
-            .child(
-                ui::secondary_button("save-preset", "Save Preset…", palette).on_click(cx.listener(
-                    |this, _, _window, cx| {
-                        this.open_preset_prompt(PromptAction::SaveNew, String::new(), cx);
-                    },
-                )),
-            )
+            .child(self.language_controls(palette, cx))
             .child(div().flex_1())
             .child(
                 ui::icon_text_button("settings", "icons/settings.svg", "Settings", palette)
@@ -491,16 +539,18 @@ impl AmigoApp {
             .header("Translations", None, palette)
             .child(self.provider_picker(&slots, selected))
             .child(div().flex_1())
-            .when_some(selected, |this, kind| {
+            // DeepL has nothing of its own to configure once the pair lives in
+            // the top bar; its account is in Settings.
+            .when(selected == Some(Provider::Ollama), |this| {
                 this.child(
                     ui::icon_button(
                         "configure-provider",
                         "icons/sliders-horizontal.svg",
-                        "Configure provider",
+                        "Configure Ollama",
                         palette,
                     )
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.open_provider_dialog(kind, cx);
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.open_provider_dialog(Provider::Ollama, cx);
                     })),
                 )
             });
@@ -613,79 +663,6 @@ impl AmigoApp {
                     .on_click(cx.listener(|this, _, _window, cx| this.translate(cx))),
             )
     }
-}
-
-/// One preset in the picker menu: the name loads it, and the two icons rename or
-/// delete it.
-fn preset_row(
-    index: usize,
-    label: &str,
-    active: bool,
-    view: &WeakEntity<AmigoApp>,
-    state: &Entity<AppState>,
-    palette: &Palette,
-) -> impl IntoElement {
-    let palette = *palette;
-    let load = state.clone();
-    let view = view.clone();
-    let rename = view.clone();
-    let delete = view;
-    let rename_name = label.to_string();
-
-    div()
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .w_full()
-        .h(px(26.))
-        .child(
-            div()
-                .id(SharedString::from(format!("preset-load-{index}")))
-                .flex_1()
-                .min_w(px(0.))
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .cursor_pointer()
-                .text_size(px(TYPE.small))
-                .text_color(if active {
-                    palette.text
-                } else {
-                    palette.text_secondary
-                })
-                .child(SharedString::from(label))
-                .on_click(move |_, _window, cx| {
-                    load.update(cx, |state, cx| state.load_preset(index, cx));
-                }),
-        )
-        .when(active, |this| {
-            this.child(ui::icon("icons/check.svg", 12.0, palette.success))
-        })
-        .child(
-            ui::menu_action(
-                &format!("preset-rename-{index}"),
-                "icons/pencil.svg",
-                "Rename preset",
-                palette.text_secondary,
-                palette.surface_strong,
-            )
-            .on_click(move |_, _window, cx| {
-                let _ = rename.update(cx, |app, cx| {
-                    app.open_preset_prompt(PromptAction::Rename(index), rename_name.clone(), cx);
-                });
-            }),
-        )
-        .child(
-            ui::menu_action(
-                &format!("preset-delete-{index}"),
-                "icons/trash.svg",
-                "Delete preset",
-                palette.danger,
-                palette.danger_soft,
-            )
-            .on_click(move |_, _window, cx| {
-                let _ = delete.update(cx, |app, cx| app.open_preset_confirm(index, cx));
-            }),
-        )
 }
 
 impl Render for AmigoApp {

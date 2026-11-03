@@ -12,18 +12,12 @@
 use std::collections::HashMap;
 
 use deepl_core::config::{Preferences, ProviderSlot};
-use deepl_core::{OllamaModel, OllamaStatus, Provider, SessionStatus, MAX_PARALLEL_LIMIT};
+use deepl_core::{
+    swap_pair, target_for_source_with, LangPair, Language, OllamaModel, OllamaStatus, Provider,
+    SessionStatus, MAX_PARALLEL_LIMIT,
+};
 use deepl_engine::{Command, Engine, Event, ProviderJob};
 use gpui_kit::{ClipboardItem, Context, EventEmitter};
-
-/// What the preset name prompt does when it is confirmed.
-#[derive(Clone, Copy)]
-pub enum PromptAction {
-    /// Snapshot the current providers under a new name.
-    SaveNew,
-    /// Rename the preset at this index.
-    Rename(usize),
-}
 
 /// A window the state needs the view to open. This is the only thing state asks
 /// of a view.
@@ -75,9 +69,7 @@ pub struct AppState {
     session: Option<SessionStatus>,
     signing_in: bool,
     auth_error: Option<String>,
-    /// Index of the preset the providers came from, for the "(Modified)" marker.
-    active_preset: Option<usize>,
-    /// The text the in-flight batch was sent with, stamped onto its results.
+    /// The text the in-flight request was sent with, stamped onto its result.
     pending_text: String,
     /// Engine-level failure shown as a banner above the action bar.
     global_error: Option<String>,
@@ -112,8 +104,6 @@ impl AppState {
         .detach();
 
         let prefs = Preferences::load();
-        // If the saved providers came from a preset, show it as loaded.
-        let active_preset = (0..prefs.presets.len()).find(|&index| prefs.matches_preset(index));
 
         Self {
             engine,
@@ -125,7 +115,6 @@ impl AppState {
             session: None,
             signing_in: false,
             auth_error: None,
-            active_preset,
             pending_text: String::new(),
             global_error: None,
             onboarded: false,
@@ -269,50 +258,9 @@ impl AppState {
         self.global_error.as_deref()
     }
 
-    pub fn active_preset(&self) -> Option<usize> {
-        self.active_preset
-    }
-
-    /// The presets, with the loaded one marked when it has drifted.
-    pub fn preset_choices(&self) -> Vec<(usize, String)> {
-        self.prefs
-            .presets
-            .iter()
-            .enumerate()
-            .map(|(index, preset)| {
-                let drifted =
-                    self.active_preset == Some(index) && !self.prefs.matches_preset(index);
-                let label = if drifted {
-                    format!("{} (Modified)", preset.name)
-                } else {
-                    preset.name.clone()
-                };
-                (index, label)
-            })
-            .collect()
-    }
-
-    /// What the picker reads: the loaded preset, or a placeholder when none is.
-    pub fn preset_label(&self) -> String {
-        let Some(index) = self.active_preset else {
-            return "Select Preset…".to_string();
-        };
-        let Some(preset) = self.prefs.presets.get(index) else {
-            return "Select Preset…".to_string();
-        };
-        if self.prefs.matches_preset(index) {
-            preset.name.clone()
-        } else {
-            format!("{} (Modified)", preset.name)
-        }
-    }
-
-    pub fn preset_name_taken(&self, name: &str, except: Option<usize>) -> bool {
-        self.prefs
-            .presets
-            .iter()
-            .enumerate()
-            .any(|(index, preset)| Some(index) != except && preset.name == name)
+    /// The pair of the provider in use, for the language controls.
+    pub fn selected_pair(&self) -> Option<LangPair> {
+        self.selected_slot().map(|slot| slot.pair)
     }
 
     /// Whether a slot can actually translate right now: DeepL needs a session,
@@ -505,50 +453,52 @@ impl AppState {
         cx.notify();
     }
 
-    pub fn save_preset_named(&mut self, name: &str, cx: &mut Context<Self>) {
-        self.prefs.save_preset(name);
-        self.active_preset = self
-            .prefs
-            .presets
-            .iter()
-            .position(|preset| preset.name == name.trim());
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn rename_preset_named(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
-        if self.prefs.rename_preset(index, name) {
-            self.prefs.save();
-            cx.notify();
-        }
-    }
-
-    pub fn delete_preset(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.prefs.delete_preset(index);
-        self.active_preset = match self.active_preset {
-            Some(active) if active == index => None,
-            Some(active) if active > index => Some(active - 1),
-            other => other,
-        };
-        self.prefs.save();
-        cx.notify();
-    }
-
-    pub fn load_preset(&mut self, index: usize, cx: &mut Context<Self>) {
-        if !self.prefs.apply_preset(index) {
-            return;
-        }
-        self.active_preset = Some(index);
-        self.outcomes.clear();
-        self.prefs.save();
-        cx.notify();
-    }
-
     pub fn sign_in(&mut self, cx: &mut Context<Self>) {
         self.signing_in = true;
         self.auth_error = None;
         self.engine.send(Command::SignIn);
         cx.notify();
+    }
+
+    /// Edit the pair of the selected provider, which is what the language
+    /// controls in the top bar drive. Changing the pair invalidates that
+    /// provider's result, so it is dropped.
+    fn edit_pair(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut ProviderSlot, Provider),
+    ) {
+        let Some(kind) = self.selected_provider() else {
+            return;
+        };
+        let Some(mut slot) = self.prefs.slot(kind).cloned() else {
+            return;
+        };
+
+        edit(&mut slot, kind);
+        self.prefs.set_slot(slot);
+        self.outcomes.remove(&kind);
+        self.prefs.save();
+        cx.notify();
+    }
+
+    pub fn set_source_language(&mut self, language: Language, cx: &mut Context<Self>) {
+        self.edit_pair(cx, |slot, kind| {
+            slot.pair.source = language;
+            slot.pair.target = target_for_source_with(kind, language, slot.pair.target);
+        });
+    }
+
+    pub fn set_target_language(&mut self, language: Language, cx: &mut Context<Self>) {
+        self.edit_pair(cx, |slot, _| slot.pair.target = language);
+    }
+
+    pub fn swap_languages(&mut self, cx: &mut Context<Self>) {
+        self.edit_pair(cx, |slot, _| {
+            if let Some(swapped) = swap_pair(slot.pair) {
+                slot.pair = swapped;
+            }
+        });
     }
 
     pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {

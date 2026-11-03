@@ -222,28 +222,6 @@ pub fn icon_text_button(id: &str, path: &str, label: &str, palette: &Palette) ->
         .child(SharedString::from(label))
 }
 
-/// Destructive action button, red text on the danger wash.
-pub fn danger_button(id: &str, label: &str, palette: &Palette) -> Stateful<Div> {
-    let palette = *palette;
-    div()
-        .id(SharedString::from(id))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(CONTROL_HEIGHT))
-        .flex_none()
-        .px(px(12.))
-        .rounded(px(RADIUS.sm))
-        .bg(palette.danger_soft)
-        .border_1()
-        .border_color(palette.danger_border)
-        .text_size(px(TYPE.small))
-        .text_color(palette.danger)
-        .hover(move |style| style.bg(palette.danger_border))
-        .cursor_pointer()
-        .child(SharedString::from(label))
-}
-
 /// Secondary button with destructive text, as the old Settings used for Sign out.
 pub fn danger_text_button(id: &str, label: &str, palette: &Palette) -> Stateful<Div> {
     let palette = *palette;
@@ -482,27 +460,4 @@ pub fn diff_span(text: &str, color: Rgba, background: Option<Rgba>, struck: bool
     } else {
         span
     }
-}
-
-/// A compact icon button for a menu row.
-pub fn menu_action(
-    id: &str,
-    icon_path: &str,
-    label: &str,
-    color: Rgba,
-    hover_bg: Rgba,
-) -> Stateful<Div> {
-    let button = div()
-        .id(SharedString::from(id))
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(px(22.))
-        .flex_none()
-        .rounded(px(RADIUS.sm))
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover_bg))
-        .child(icon(icon_path, 13.0, color));
-
-    labeled(button, label)
 }

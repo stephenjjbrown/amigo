@@ -3,10 +3,7 @@
 use std::rc::Rc;
 
 use deepl_core::config::{ProviderSlot, TranslationMode};
-use deepl_core::{
-    allowed_targets_for, swap_pair, target_for_source_with, Language, OllamaModel, Provider,
-    Register, MAX_VARIANTS, SOURCE_LANGUAGES,
-};
+use deepl_core::{OllamaModel, Provider, Register, MAX_VARIANTS};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -130,74 +127,6 @@ impl ProviderDialog {
                 }
                 menu
             })
-    }
-
-    /// The language pair: FROM and TO over their pickers, with the swap between.
-    fn language_section(&self, palette: &Palette, cx: &mut Context<Self>) -> Div {
-        let pair = self.draft.pair;
-        let sources: Vec<Choice<Language>> = SOURCE_LANGUAGES
-            .iter()
-            .map(|language| (*language, SharedString::from(language.label()), true))
-            .collect();
-        let targets: Vec<Choice<Language>> = allowed_targets_for(self.draft.kind, pair.source)
-            .iter()
-            .map(|language| (*language, SharedString::from(language.label()), true))
-            .collect();
-
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(div().w(px(170.)).child(ui::section_label("FROM", palette)))
-                    .child(div().w(px(CONTROL_HEIGHT)))
-                    .child(div().w(px(170.)).child(ui::section_label("TO", palette))),
-            )
-            .child(
-                ui::control_row()
-                    .child(self.picker(
-                        "source",
-                        170.0,
-                        SharedString::from(pair.source.label()),
-                        sources,
-                        pair.source,
-                        palette,
-                        |draft, language| {
-                            draft.pair.source = language;
-                            draft.pair.target =
-                                target_for_source_with(draft.kind, language, draft.pair.target);
-                        },
-                        cx,
-                    ))
-                    .child(
-                        ui::circle_icon_button(
-                            "swap-pair",
-                            "icons/arrow-right-left.svg",
-                            "Swap languages",
-                            palette,
-                        )
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            if let Some(swapped) = swap_pair(this.draft.pair) {
-                                this.draft.pair = swapped;
-                                cx.notify();
-                            }
-                        })),
-                    )
-                    .child(self.picker(
-                        "target",
-                        170.0,
-                        SharedString::from(pair.target.label()),
-                        targets,
-                        pair.target,
-                        palette,
-                        |draft, language| draft.pair.target = language,
-                        cx,
-                    )),
-            )
     }
 
     /// Everything that only applies to Ollama: model, register, mode, context and
@@ -395,7 +324,6 @@ impl Render for ProviderDialog {
         let kind = self.draft.kind;
 
         ui::dialog_root(&palette)
-            .child(self.language_section(&palette, cx))
             .when(kind == Provider::Ollama, |this| {
                 this.child(self.ollama_section(&palette, cx))
             })

@@ -1,6 +1,5 @@
 mod app;
 mod assets;
-mod dialogs;
 mod format;
 mod logging;
 mod provider;

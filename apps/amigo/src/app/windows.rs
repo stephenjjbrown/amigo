@@ -8,12 +8,8 @@ use gpui_kit::{
     WindowOptions,
 };
 
-use super::{AppState, PromptAction};
-use crate::{dialogs, provider, settings};
-
-/// The name prompt and the confirmation share one small window size.
-const DIALOG_SIZE: (f32, f32) = (360.0, 170.0);
-const DIALOG_MIN_SIZE: (f32, f32) = (320.0, 150.0);
+use super::AppState;
+use crate::{provider, settings};
 
 impl super::AmigoApp {
     /// Configure a provider. There is nothing to add: both providers always
@@ -27,57 +23,6 @@ impl super::AmigoApp {
             (430.0, 560.0),
             |app, handle| app.provider_window = Some(handle),
             move |state, window, cx| provider::ProviderDialog::new(state, provider, window, cx),
-        );
-    }
-
-    /// Open the preset name prompt, or bring it forward if it is already open.
-    pub fn open_preset_prompt(
-        &mut self,
-        action: PromptAction,
-        initial: String,
-        cx: &mut Context<Self>,
-    ) {
-        Self::open_dialog(
-            cx,
-            self.prompt_window.as_ref(),
-            dialogs::prompt_title(action).to_string(),
-            DIALOG_SIZE,
-            DIALOG_MIN_SIZE,
-            |app, handle| app.prompt_window = Some(handle),
-            move |state, window, cx| {
-                dialogs::PromptDialog::new(state, action, &initial, window, cx)
-            },
-        );
-    }
-
-    /// Ask before deleting a preset: the only destructive action left.
-    pub fn open_preset_confirm(&mut self, index: usize, cx: &mut Context<Self>) {
-        let (title, body) = {
-            let state = self.state.read(cx);
-            match state.prefs().presets.get(index) {
-                Some(preset) => (
-                    "Delete preset".to_string(),
-                    format!(
-                        "Delete \"{}\" and the {} provider{} it holds? The current providers stay as they are.",
-                        preset.name,
-                        preset.providers.len(),
-                        if preset.providers.len() == 1 { "" } else { "s" }
-                    ),
-                ),
-                None => ("Delete preset".to_string(), "Delete this preset?".to_string()),
-            }
-        };
-
-        Self::open_dialog(
-            cx,
-            self.confirm_window.as_ref(),
-            title.clone(),
-            DIALOG_SIZE,
-            DIALOG_MIN_SIZE,
-            |app, handle| app.confirm_window = Some(handle),
-            move |state, _window, cx| {
-                dialogs::ConfirmDialog::new(state, index, title.clone(), body.clone(), cx)
-            },
         );
     }
 
