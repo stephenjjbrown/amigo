@@ -90,7 +90,7 @@ time to discover, so they don't have to be rediscovered.
 apps/amigo/src/app/state.rs    AppState: the model (engine, prefs, results). No Render.
 apps/amigo/src/app/mod.rs      the main window: panes, cards, action bar
 apps/amigo/src/app/windows.rs  open_dialog + dialog launchers (App::defer rule)
-apps/amigo/src/settings.rs     Settings window
+apps/amigo/src/settings.rs     Settings window: left nav + sections
 apps/amigo/src/provider.rs     Configure provider window
 apps/amigo/src/ui.rs           component vocabulary (controls, roots, labels…)
 apps/amigo/src/format.rs       text derived from a slot (card title/subtitle)
@@ -135,6 +135,35 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
   in. There is nothing to add or delete: the UI selects and configures, nothing
   else. `translate` sends one job for the selected kind. Do not reintroduce
   provider ids, add/remove actions, or a card per provider.
+- **Languages are a catalogue, not a pair table.** `crates/deepl-core/src/pairs.rs`
+  lists every language with its Gemma tag, its DeepL source and target codes
+  (`None` = that role is not offered) and a `fallback` to a coarser variant.
+  `Language::resolve(provider, role)` walks that chain both ways: `PT-PT`
+  becomes `PT` when DeepL reads it, and a source-only base (`PT`, `ZH`) becomes
+  its most widely used regional target (`PT-BR`, `ZH-HANS`) when written — see
+  `preferred_target`. Use the helpers
+  (`languages_for`, `allowed_targets_for`, `swap_pair`) rather than matching on
+  `Language` by hand. The Settings → Languages page edits
+  `Preferences::enabled_languages` (`None` = everything on), and the top bar
+  filters its menus by it.
+- **The language data is researched, not invented.** DeepL's side comes from the
+  `get-source-languages` and `get-target-languages` tools on the MCP server the
+  app talks to (114 and 121 codes, and they differ: `PT`/`ZH` are source-only,
+  `PT-BR`/`PT-PT`/`ZH-HANS`/`ZH-HANT`/`EN-US`/`EN-GB` target-only). Gemma's side
+  is the 55 verified WMT24++ languages plus the same regional variants DeepL
+  offers, not the large experimental tail the chat template also accepts.
+  **Localisations are targets only** (a `fallback` marks a localisation): the
+  source side uses the base language, so `FR-CA` resolves to `FR` when read.
+  Kurdish is not a variant but two distinct languages (`KMR`, `CKB`), which is
+  why both can be sources. The docs MCP server
+  (`https://developers.deepl.com/mcp`, unauthenticated) will serve the page
+  source with names for those codes; the public REST endpoints need an API key,
+  which this app does not have. Re-run the two tools rather than editing codes
+  from memory.
+- **The pair behaves as one setting but is stored per provider.**
+  `AppState::set_pair_everywhere` writes the chosen pair to the selected provider
+  and the closest equivalent to the other (`Language::resolve`), so switching
+  provider keeps the intent while menus follow the selected provider.
 - **Presets are out of the UI for now.** The core model (`Preset`,
   `Preferences::save_preset/apply_preset/…`) is still there and still migrated,
   but no window references it. Their old place in the top bar now holds the
@@ -156,6 +185,10 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
 
 - `ProviderJob::Ollama { model }` takes `model.id()` (`gemma4:cloud`), never
   `model.label()` (`Gemma 4 31B (cloud)`).
+- **Local models are single-translation only.** Multi sampling runs several
+  requests at once, so `ProviderSlot::enforce_model_for_mode` moves a multi slot
+  to the cloud default (Gemma 4 31B, also `OllamaModel::default()`), and the
+  dialog's model menu hides local models in multi mode.
 - Ollama's Settings count must be *supported* models
   (`OllamaModel::ALL` filtered by `status.can_use`), not `status.models.len()`.
 - Preferences live in `preferences.json` only. The import of eframe's `app.ron`

@@ -12,10 +12,13 @@ renderer); there is no WebView and no local web server.
 - **DeepL** via OAuth 2.1 + PKCE and the MCP `translate-text` tool — sign in
   from the app, no API key
 - **Ollama** against the local daemon, with TranslateGemma 4B/12B/27B, Gemma 4
-  and DeepSeek V4.1 Flash (cloud) as models
-- Both providers are always available — choose one in the Translations header,
-  pick the language pair in the top bar, and configure that provider's model,
-  mode and sampling in its dialog
+  and DeepSeek V4.1 Flash (cloud) as models — local models are single-translation
+  only, since multi sampling runs several requests at once; the default is the
+  Gemma 4 cloud model
+- Choose the pair in the top bar; the languages it offers come from a catalogue
+  spanning DeepL and TranslateGemma, with regional variants falling back to their
+  base language where a provider lacks them. Settings → Languages decides which
+  of them appear in the menus.
 - **Multi-sample mode**: several translations of one sentence, shown as
   word-level diffs against the most typical sample, with duplicate samples
   grouped
@@ -84,6 +87,37 @@ rendering, and call commands on it to change anything. GPUI repaints a view when
 an entity it read notifies, so every open window stays in sync without
 observers; the one subscription is the main view reacting to the state events
 that ask for a window to open (sign-in / setup).
+
+## Languages
+
+`crates/deepl-core/src/pairs.rs` is a catalogue, not a hand-written pair table.
+Each entry records its identifier, the tag TranslateGemma uses, the DeepL codes
+for the source and target roles (`None` where DeepL does not offer that role),
+and the coarser variant to fall back to.
+
+- **DeepL** offers 114 source languages and 121 targets, taken from the
+  `get-source-languages` / `get-target-languages` tools DeepL exposes on the MCP
+  server the app talks to. Portuguese and Chinese are read under their base codes
+  (`PT`, `ZH`) and written under regional ones (`PT-BR`/`PT-PT`,
+  `ZH-HANS`/`ZH-HANT`); English is read as `EN` and written as `EN-US`/`EN-GB`.
+- **TranslateGemma** offers the 55 languages its model card benchmarks (the
+  WMT24++ set) plus the same regional variants DeepL offers (Brazilian/European
+  Portuguese, American/British English, Latin American Spanish, Canadian French,
+  Swiss German, both Chinese scripts) **as targets**. Localisations are never
+  offered as sources: the source side uses the base language, so `FR-CA` falls
+  back to `FR`. The much larger experimental tail the chat template accepts is
+  deliberately not offered.
+
+`Language::resolve` walks the fallback chain, so `PT-PT` as a source becomes `PT`
+for DeepL and `ZH-HANT` becomes `ZH`. It also resolves the other way when a base
+language is written: `PT` becomes `PT-BR`, `EN` would become `EN-US` and `ZH`
+becomes `ZH-HANS` — the most widely used variant of each. The FROM and TO menus are built per
+provider and role from that table, then filtered by whatever Settings -> Languages
+has switched on.
+
+The pair is stored on each provider but behaves as one setting: picking a
+language applies it to the selected provider and stores the closest equivalent on
+the other, so switching provider keeps your intent.
 
 ## Tests
 
