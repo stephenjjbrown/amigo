@@ -45,10 +45,10 @@ fn batch_indices(count: usize, parallel: usize) -> Vec<Vec<usize>> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OllamaModel {
-    #[default]
     TranslateGemma4b,
     TranslateGemma12b,
     TranslateGemma27b,
+    #[default]
     Gemma4Cloud,
     DeepSeekV41FlashCloud,
 }
@@ -409,8 +409,8 @@ pub fn build_prompt(
 ) -> String {
     let source_name = source.label();
     let target_name = target.label();
-    let source_code = source.ollama_source_code();
-    let target_code = target.ollama_target_code();
+    let source_code = source.gemma_code().unwrap_or(source.code());
+    let target_code = target.gemma_code().unwrap_or(target.code());
 
     let mut instructions = String::new();
     if let Some(hint) = register.prompt_hint() {
@@ -547,7 +547,7 @@ mod tests {
         assert!(prompt.contains("Source language code: pt. Target language code: en."));
         assert!(prompt.contains("Produce only the English translation"));
         assert!(prompt.ends_with("\n\nOlá, mundo."));
-        assert!(!prompt.contains("Brazilian"));
+        assert!(!prompt.contains("Use Brazilian"));
         assert!(!prompt.contains("European Portuguese"));
     }
 
@@ -604,7 +604,7 @@ mod tests {
             Language::Spanish,
         ] {
             let prompt = build_prompt("Hello.", Language::English, target, Register::Casual, None);
-            assert!(!prompt.contains("Brazilian"));
+            assert!(!prompt.contains("Use Brazilian"));
             assert!(!prompt.contains("European Portuguese"));
             assert!(!prompt.contains("not Brazilian"));
             assert!(!prompt.contains("not European"));
@@ -613,13 +613,14 @@ mod tests {
 
     #[test]
     fn regional_portuguese_codes_are_used() {
-        assert_eq!(Language::PortuguesePortugal.ollama_target_code(), "pt-PT");
-        assert_eq!(Language::PortugueseBrazil.ollama_target_code(), "pt-BR");
+        assert_eq!(Language::PortuguesePortugal.gemma_code(), Some("pt-PT"));
+        assert_eq!(Language::PortugueseBrazil.gemma_code(), Some("pt-BR"));
     }
 
     #[test]
-    fn default_model_is_the_local_4b() {
-        assert_eq!(OllamaModel::default().id(), "translategemma:4b");
+    fn default_model_is_the_cloud_gemma() {
+        assert_eq!(OllamaModel::default().id(), "gemma4:cloud");
+        assert!(OllamaModel::default().is_cloud());
     }
 
     #[test]

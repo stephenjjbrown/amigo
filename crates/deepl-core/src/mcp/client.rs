@@ -179,14 +179,20 @@ impl McpClient {
             },
         );
         if let Some(source_key) = &shape.source_key {
-            arguments.insert(source_key.clone(), json!(source.mcp_source_code()));
+            let code = source
+                .deepl_code(crate::Role::Source)
+                .ok_or_else(|| ApiError::input("DeepL cannot read that source language."))?;
+            arguments.insert(source_key.clone(), json!(code));
         }
+        let target_code = target
+            .deepl_code(crate::Role::Target)
+            .ok_or_else(|| ApiError::input("DeepL cannot produce that target language."))?;
         arguments.insert(
             shape.target_key.clone(),
             if shape.target_is_array {
-                json!([target.mcp_target_code()])
+                json!([target_code])
             } else {
-                json!(target.mcp_target_code())
+                json!(target_code)
             },
         );
         if shape.allow_preserve_formatting {

@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::ollama::{OllamaModel, Register, Sampling, MAX_PARALLEL_LIMIT, MAX_VARIANTS};
-use crate::pairs::LangPair;
+use crate::pairs::{LangPair, Language, Role};
 use crate::provider::Provider;
+use crate::target_for_source_with;
 
 pub const DEFAULT_VARIANTS: usize = 5;
 pub const DEFAULT_MULTI_TEMPERATURE: f32 = 1.7;
@@ -107,6 +108,14 @@ impl ProviderSlot {
         }
     }
 
+    /// Local models are only offered for single translation; multi sampling runs
+    /// in the cloud, so a slot that moves to multi falls back to the cloud model.
+    pub fn enforce_model_for_mode(&mut self) {
+        if self.mode == TranslationMode::Multi && !self.model.is_cloud() {
+            self.model = OllamaModel::default();
+        }
+    }
+
     /// How many samples this slot asks for.
     pub fn count(&self) -> usize {
         match self.mode {
@@ -130,6 +139,9 @@ pub struct Preferences {
     /// The provider in use, or `None` for the "Select Provider" state.
     #[serde(default)]
     pub selected_provider: Option<Provider>,
+    /// Languages offered in the dropdowns. `None` means every catalogue entry.
+    #[serde(default)]
+    pub enabled_languages: Option<Vec<Language>>,
     /// Saved provider sets the user can switch between.
     #[serde(default)]
     pub presets: Vec<Preset>,
@@ -167,6 +179,7 @@ impl Default for Preferences {
                 })
                 .collect(),
             selected_provider: None,
+            enabled_languages: None,
             presets: Vec::new(),
             verbose_logging: false,
             local_parallel: default_local_parallel(),
@@ -223,11 +236,72 @@ impl Preferences {
     /// providers are always on offer.
     fn normalise(&mut self) {
         self.providers = fold(std::mem::take(&mut self.providers));
+        for slot in &mut self.providers {
+            slot.enforce_model_for_mode();
+        }
     }
 
     /// The configuration of one provider.
     pub fn slot(&self, kind: Provider) -> Option<&ProviderSlot> {
         self.providers.iter().find(|slot| slot.kind == kind)
+    }
+
+    /// Whether a language is offered in the dropdowns.
+    pub fn language_enabled(&self, language: Language) -> bool {
+        match &self.enabled_languages {
+            None => true,
+            Some(enabled) => enabled.contains(&language),
+        }
+    }
+
+    /// Show or hide a language in the dropdowns.
+    pub fn set_language_enabled(&mut self, language: Language, enabled: bool) {
+        let mut languages = self
+            .enabled_languages
+            .clone()
+            .unwrap_or_else(crate::all_languages);
+        if enabled {
+            if !languages.contains(&language) {
+                languages.push(language);
+            }
+        } else {
+            languages.retain(|kept| *kept != language);
+        }
+        self.enabled_languages = Some(languages);
+    }
+
+    /// Apply a pair chosen in the UI. The selected provider keeps it verbatim
+    /// (its menus only offer what it supports); the others keep the closest
+    /// equivalent they can translate, or their current value when there is none.
+    /// This is what makes the pair behave as one setting while staying stored per
+    /// provider.
+    pub fn set_pair_everywhere(&mut self, selected: Provider, pair: LangPair) {
+        for kind in Provider::ALL {
+            let Some(mut slot) = self.slot(kind).cloned() else {
+                continue;
+            };
+
+            if kind == selected {
+                slot.pair = pair;
+            } else {
+                slot.pair.source = pair
+                    .source
+                    .resolve(kind, Role::Source)
+                    .unwrap_or(slot.pair.source);
+                slot.pair.target = pair
+                    .target
+                    .resolve(kind, Role::Target)
+                    .unwrap_or(slot.pair.target);
+            }
+
+            // A provider may collapse a region onto its base language, which can
+            // make source and target agree; pick something else in that case.
+            if slot.pair.target == slot.pair.source {
+                slot.pair.target = target_for_source_with(kind, slot.pair.source, slot.pair.target);
+            }
+
+            self.set_slot(slot);
+        }
     }
 
     /// Replace the configuration of one provider.
@@ -463,6 +537,34 @@ mod tests {
         assert_eq!(
             prefs.slot(Provider::Ollama).unwrap().register,
             Register::Neutral
+        );
+    }
+
+    #[test]
+    fn the_pair_is_stored_per_provider_but_behaves_as_one_setting() {
+        let mut prefs = Preferences::default();
+
+        // Chosen with Gemma selected, which accepts the region as a source.
+        prefs.set_pair_everywhere(
+            Provider::Ollama,
+            LangPair {
+                source: Language::PortuguesePortugal,
+                target: Language::English,
+            },
+        );
+
+        assert_eq!(
+            prefs.slot(Provider::Ollama).unwrap().pair.source,
+            Language::PortuguesePortugal
+        );
+        // DeepL never reads a region, so it keeps the base language.
+        assert_eq!(
+            prefs.slot(Provider::DeepL).unwrap().pair.source,
+            Language::Portuguese
+        );
+        assert_eq!(
+            prefs.slot(Provider::DeepL).unwrap().pair.target,
+            Language::English
         );
     }
 

@@ -1,3 +1,12 @@
+//! The language catalogue: every language the app knows, which provider can use
+//! it and in which role, and the coarser variant to fall back to when one cannot.
+//!
+//! DeepL's lists are the larger of the two — 114 source and 121 target codes —
+//! and its source side never takes a region (`PT`, not `PT-PT`).
+//! TranslateGemma covers its 55 verified languages plus the same regional
+//! variants, using BCP-47 tags in both roles. The table is the single source of
+//! truth: a `None` code means that role is not offered.
+
 use serde::{Deserialize, Serialize};
 
 use crate::provider::Provider;
@@ -5,134 +14,337 @@ use crate::provider::Provider;
 /// DeepL accepts up to 128 KiB of text per request; keep a margin below that.
 pub const MAX_TEXT_CHARS: usize = 100_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Language {
-    Portuguese,
-    English,
-    Spanish,
-    PortuguesePortugal,
-    PortugueseBrazil,
-    PortugueseAngola,
-    PortugueseAzores,
-    SpanishArgentina,
-    SpanishColombia,
-    SpanishMexico,
+/// Which end of a translation a language is being used for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Source,
+    Target,
+}
+
+/// One entry in the catalogue.
+#[derive(Debug, Clone, Copy)]
+pub struct LanguageDef {
+    pub language: Language,
+    pub label: &'static str,
+    /// The identifier shown in diagnostics.
+    pub code: &'static str,
+    /// Tag used in the TranslateGemma prompt, when the model's verified set
+    /// (the WMT24++ languages) covers this one.
+    pub gemma: Option<&'static str>,
+    /// The coarser variant to use when a provider does not support this one.
+    pub fallback: Option<Language>,
+    /// DeepL code as a source, or `None` when DeepL cannot read this language.
+    pub deepl_source: Option<&'static str>,
+    /// DeepL code as a target, or `None` when DeepL cannot produce it.
+    pub deepl_target: Option<&'static str>,
+}
+
+macro_rules! catalogue {
+    ($($variant:ident, $label:literal, $code:literal, $gemma:tt, $fallback:tt, $dsrc:tt, $dtgt:tt;)*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum Language { $($variant),* }
+
+        pub const CATALOGUE: &[LanguageDef] = &[
+            $(LanguageDef {
+                language: Language::$variant,
+                label: $label,
+                code: $code,
+                gemma: opt!($gemma),
+                fallback: fallback!($fallback),
+                deepl_source: opt!($dsrc),
+                deepl_target: opt!($dtgt),
+            }),*
+        ];
+    };
+}
+
+macro_rules! fallback {
+    (none) => {
+        None
+    };
+    ($variant:ident) => {
+        Some(Language::$variant)
+    };
+}
+
+macro_rules! opt {
+    (none) => {
+        None
+    };
+    ($value:literal) => {
+        Some($value)
+    };
+}
+
+catalogue! {
+    Acehnese, "Acehnese", "ACE", none, none, "ACE", "ACE";
+    Afrikaans, "Afrikaans", "AF", none, none, "AF", "AF";
+    Aragonese, "Aragonese", "AN", none, none, "AN", "AN";
+    Arabic, "Arabic", "AR", none, none, "AR", "AR";
+    Assamese, "Assamese", "AS", "as", none, "AS", "AS";
+    Aymara, "Aymara", "AY", none, none, "AY", "AY";
+    Azerbaijani, "Azerbaijani", "AZ", none, none, "AZ", "AZ";
+    Bashkir, "Bashkir", "BA", none, none, "BA", "BA";
+    Belarusian, "Belarusian", "BE", "be", none, "BE", "BE";
+    Bulgarian, "Bulgarian", "BG", "bg", none, "BG", "BG";
+    Bhojpuri, "Bhojpuri", "BHO", none, none, "BHO", "BHO";
+    Bengali, "Bengali", "BN", "bn", none, "BN", "BN";
+    Breton, "Breton", "BR", none, none, "BR", "BR";
+    Bosnian, "Bosnian", "BS", "bs", none, "BS", "BS";
+    Catalan, "Catalan", "CA", "ca", none, "CA", "CA";
+    Cebuano, "Cebuano", "CEB", none, none, "CEB", "CEB";
+    KurdishSorani, "Kurdish (Sorani)", "CKB", none, none, "CKB", "CKB";
+    Czech, "Czech", "CS", "cs", none, "CS", "CS";
+    Welsh, "Welsh", "CY", "cy", none, "CY", "CY";
+    Danish, "Danish", "DA", "da", none, "DA", "DA";
+    German, "German", "DE", "de", none, "DE", "DE";
+    Greek, "Greek", "EL", "el", none, "EL", "EL";
+    English, "English", "EN", "en", none, "EN", "EN";
+    Esperanto, "Esperanto", "EO", none, none, "EO", "EO";
+    Spanish, "Spanish", "ES", "es", none, "ES", "ES";
+    Estonian, "Estonian", "ET", "et", none, "ET", "ET";
+    Basque, "Basque", "EU", none, none, "EU", "EU";
+    Persian, "Persian", "FA", "fa", none, "FA", "FA";
+    Finnish, "Finnish", "FI", "fi", none, "FI", "FI";
+    French, "French", "FR", "fr", none, "FR", "FR";
+    Irish, "Irish", "GA", none, none, "GA", "GA";
+    Galician, "Galician", "GL", "gl", none, "GL", "GL";
+    Guarani, "Guarani", "GN", none, none, "GN", "GN";
+    Konkani, "Konkani", "GOM", none, none, "GOM", "GOM";
+    Gujarati, "Gujarati", "GU", "gu", none, "GU", "GU";
+    Hausa, "Hausa", "HA", none, none, "HA", "HA";
+    Hebrew, "Hebrew", "HE", "he", none, "HE", "HE";
+    Hindi, "Hindi", "HI", "hi", none, "HI", "HI";
+    Croatian, "Croatian", "HR", "hr", none, "HR", "HR";
+    HaitianCreole, "Haitian Creole", "HT", none, none, "HT", "HT";
+    Hungarian, "Hungarian", "HU", "hu", none, "HU", "HU";
+    Armenian, "Armenian", "HY", none, none, "HY", "HY";
+    Indonesian, "Indonesian", "ID", "id", none, "ID", "ID";
+    Igbo, "Igbo", "IG", none, none, "IG", "IG";
+    Icelandic, "Icelandic", "IS", "is", none, "IS", "IS";
+    Italian, "Italian", "IT", "it", none, "IT", "IT";
+    Japanese, "Japanese", "JA", "ja", none, "JA", "JA";
+    Javanese, "Javanese", "JV", none, none, "JV", "JV";
+    Georgian, "Georgian", "KA", none, none, "KA", "KA";
+    Kazakh, "Kazakh", "KK", none, none, "KK", "KK";
+    KurdishKurmanji, "Kurdish (Kurmanji)", "KMR", none, none, "KMR", "KMR";
+    Korean, "Korean", "KO", "ko", none, "KO", "KO";
+    Kyrgyz, "Kyrgyz", "KY", none, none, "KY", "KY";
+    Latin, "Latin", "LA", none, none, "LA", "LA";
+    Luxembourgish, "Luxembourgish", "LB", none, none, "LB", "LB";
+    Lombard, "Lombard", "LMO", none, none, "LMO", "LMO";
+    Lingala, "Lingala", "LN", none, none, "LN", "LN";
+    Lithuanian, "Lithuanian", "LT", "lt", none, "LT", "LT";
+    Latvian, "Latvian", "LV", "lv", none, "LV", "LV";
+    Maithili, "Maithili", "MAI", none, none, "MAI", "MAI";
+    Malagasy, "Malagasy", "MG", none, none, "MG", "MG";
+    Maori, "Maori", "MI", none, none, "MI", "MI";
+    Macedonian, "Macedonian", "MK", "mk", none, "MK", "MK";
+    Malayalam, "Malayalam", "ML", "ml", none, "ML", "ML";
+    Mongolian, "Mongolian", "MN", "mn", none, "MN", "MN";
+    Marathi, "Marathi", "MR", "mr", none, "MR", "MR";
+    Malay, "Malay", "MS", none, none, "MS", "MS";
+    Maltese, "Maltese", "MT", none, none, "MT", "MT";
+    Burmese, "Burmese", "MY", none, none, "MY", "MY";
+    Norwegian, "Norwegian (bokmål)", "NB", "nb", none, "NB", "NB";
+    Nepali, "Nepali", "NE", none, none, "NE", "NE";
+    Dutch, "Dutch", "NL", "nl", none, "NL", "NL";
+    Occitan, "Occitan", "OC", none, none, "OC", "OC";
+    Oromo, "Oromo", "OM", none, none, "OM", "OM";
+    Punjabi, "Punjabi", "PA", "pa", none, "PA", "PA";
+    Pangasinan, "Pangasinan", "PAG", none, none, "PAG", "PAG";
+    Kapampangan, "Kapampangan", "PAM", none, none, "PAM", "PAM";
+    Polish, "Polish", "PL", "pl", none, "PL", "PL";
+    Dari, "Dari", "PRS", none, none, "PRS", "PRS";
+    Pashto, "Pashto", "PS", none, none, "PS", "PS";
+    Portuguese, "Portuguese", "PT", "pt", none, "PT", none;
+    Quechua, "Quechua", "QU", none, none, "QU", "QU";
+    Romanian, "Romanian", "RO", "ro", none, "RO", "RO";
+    Russian, "Russian", "RU", "ru", none, "RU", "RU";
+    Sanskrit, "Sanskrit", "SA", none, none, "SA", "SA";
+    Sicilian, "Sicilian", "SCN", none, none, "SCN", "SCN";
+    Slovak, "Slovak", "SK", "sk", none, "SK", "SK";
+    Slovenian, "Slovenian", "SL", "sl", none, "SL", "SL";
+    Albanian, "Albanian", "SQ", none, none, "SQ", "SQ";
+    Serbian, "Serbian", "SR", "sr", none, "SR", "SR";
+    Sesotho, "Sesotho", "ST", none, none, "ST", "ST";
+    Sundanese, "Sundanese", "SU", none, none, "SU", "SU";
+    Swedish, "Swedish", "SV", "sv", none, "SV", "SV";
+    Swahili, "Swahili", "SW", "sw", none, "SW", "SW";
+    Tamil, "Tamil", "TA", "ta", none, "TA", "TA";
+    Telugu, "Telugu", "TE", "te", none, "TE", "TE";
+    Tajik, "Tajik", "TG", none, none, "TG", "TG";
+    Thai, "Thai", "TH", "th", none, "TH", "TH";
+    Turkmen, "Turkmen", "TK", none, none, "TK", "TK";
+    Tagalog, "Tagalog", "TL", none, none, "TL", "TL";
+    Tswana, "Tswana", "TN", none, none, "TN", "TN";
+    Turkish, "Turkish", "TR", "tr", none, "TR", "TR";
+    Tsonga, "Tsonga", "TS", none, none, "TS", "TS";
+    Tatar, "Tatar", "TT", none, none, "TT", "TT";
+    Ukrainian, "Ukrainian", "UK", "uk", none, "UK", "UK";
+    Urdu, "Urdu", "UR", "ur", none, "UR", "UR";
+    Uzbek, "Uzbek", "UZ", none, none, "UZ", "UZ";
+    Vietnamese, "Vietnamese", "VI", "vi", none, "VI", "VI";
+    Wolof, "Wolof", "WO", none, none, "WO", "WO";
+    Xhosa, "Xhosa", "XH", none, none, "XH", "XH";
+    Yiddish, "Yiddish", "YI", none, none, "YI", "YI";
+    Cantonese, "Cantonese", "YUE", none, none, "YUE", "YUE";
+    Chinese, "Chinese (Simplified)", "ZH", "zh", none, "ZH", none;
+    Zulu, "Zulu", "ZU", none, none, "ZU", "ZU";
+    GermanSwiss, "German (Swiss)", "DE-CH", "de-CH", German, none, "DE-CH";
+    EnglishBritish, "English (British)", "EN-GB", "en-GB", English, none, "EN-GB";
+    EnglishAmerican, "English (American)", "EN-US", "en-US", English, none, "EN-US";
+    SpanishLatinAmerican, "Spanish (Latin American)", "ES-419", "es-419", Spanish, none, "ES-419";
+    FrenchCanadian, "French (Canadian)", "FR-CA", "fr-CA", French, none, "FR-CA";
+    PortugueseBrazil, "Portuguese (Brazilian)", "PT-BR", "pt-BR", Portuguese, none, "PT-BR";
+    PortuguesePortugal, "Portuguese (European)", "PT-PT", "pt-PT", Portuguese, none, "PT-PT";
+    ChineseSimplified, "Chinese (Simplified)", "ZH-HANS", "zh-Hans", Chinese, none, "ZH-HANS";
+    ChineseTraditional, "Chinese (Traditional)", "ZH-HANT", "zh-Hant", Chinese, none, "ZH-HANT";
+    Kannada, "Kannada", "KN", "kn", none, none, none;
 }
 
 impl Language {
-    /// Code sent to DeepL.
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::Portuguese => "PT",
-            Self::English => "EN",
-            Self::Spanish => "ES",
-            Self::PortuguesePortugal => "PT-PT",
-            Self::PortugueseBrazil => "PT-BR",
-            Self::PortugueseAngola => "PT-AO",
-            Self::PortugueseAzores => "PT-20",
-            Self::SpanishArgentina => "ES-AR",
-            Self::SpanishColombia => "ES-CO",
-            Self::SpanishMexico => "ES-MX",
-        }
+    /// The catalogue entry for this language.
+    pub fn info(self) -> &'static LanguageDef {
+        CATALOGUE
+            .iter()
+            .find(|entry| entry.language == self)
+            .expect("every language is in the catalogue")
     }
 
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Portuguese => "Portuguese",
-            Self::English => "English",
-            Self::Spanish => "Spanish",
-            Self::PortuguesePortugal => "Portuguese (Portugal)",
-            Self::PortugueseBrazil => "Portuguese (Brazil)",
-            Self::PortugueseAngola => "Portuguese (Angola)",
-            Self::PortugueseAzores => "Portuguese (Azores)",
-            Self::SpanishArgentina => "Spanish (Argentina)",
-            Self::SpanishColombia => "Spanish (Colombia)",
-            Self::SpanishMexico => "Spanish (Mexico)",
+        self.info().label
+    }
+
+    pub fn code(self) -> &'static str {
+        self.info().code
+    }
+
+    pub fn gemma_code(self) -> Option<&'static str> {
+        self.info().gemma
+    }
+
+    /// The coarser variant to use when a provider lacks this one.
+    pub fn fallback(self) -> Option<Language> {
+        self.info().fallback
+    }
+
+    /// Whether the provider can use this language in this role, unresolved.
+    pub fn is_supported_by(self, provider: Provider, role: Role) -> bool {
+        match provider {
+            // Gemma claims its verified (WMT24++) languages plus the regional
+            // variants DeepL offers — but a localisation is a *target* concern:
+            // `FR-CA` is offered to write, not to read, and a stored regional
+            // source falls back to its base language.
+            Provider::Ollama => match role {
+                Role::Source => self.info().gemma.is_some() && self.info().fallback.is_none(),
+                Role::Target => self.info().gemma.is_some(),
+            },
+            Provider::DeepL => match role {
+                Role::Source => self.info().deepl_source.is_some(),
+                Role::Target => self.info().deepl_target.is_some(),
+            },
         }
     }
 
-    /// DeepL language code accepted by the hosted MCP `translate-text` tool.
-    pub fn mcp_source_code(self) -> &'static str {
+    /// The regional variant to use when a base language is wanted as a target but
+    /// the provider only accepts its regions ("reverse resolve": coarser to more
+    /// specific). The choice is the *most widely used* variant, not the first one
+    /// in the catalogue: Brazilian Portuguese, American English, simplified
+    /// Chinese. English and the rest already resolve directly today; they are
+    /// listed so the rule stays in one place if a provider ever stops taking the
+    /// base code as a target.
+    fn preferred_target(self) -> Option<Language> {
         match self {
-            Self::Portuguese
-            | Self::PortuguesePortugal
-            | Self::PortugueseBrazil
-            | Self::PortugueseAngola
-            | Self::PortugueseAzores => "PT",
-            Self::English => "EN",
-            Self::Spanish
-            | Self::SpanishArgentina
-            | Self::SpanishColombia
-            | Self::SpanishMexico => "ES",
+            Language::English => Some(Language::EnglishAmerican),
+            Language::Portuguese => Some(Language::PortugueseBrazil),
+            Language::Chinese => Some(Language::ChineseSimplified),
+            _ => None,
         }
     }
 
-    /// DeepL language code accepted by the hosted MCP tool as a target. The
-    /// region must be explicit for PT, otherwise the service defaults to
-    /// Brazilian Portuguese.
-    ///
-    /// DeepL has no Angolan or Azorean Portuguese target and a single Spanish,
-    /// so those regional pairs are never offered for a DeepL provider.
-    pub fn mcp_target_code(self) -> &'static str {
-        match self {
-            Self::Portuguese
-            | Self::PortuguesePortugal
-            | Self::PortugueseAngola
-            | Self::PortugueseAzores => "PT-PT",
-            Self::PortugueseBrazil => "PT-BR",
-            Self::English => "EN",
-            Self::Spanish => "ES",
-            Self::SpanishArgentina | Self::SpanishColombia | Self::SpanishMexico => "ES",
+    /// The language a provider should actually receive: this one, its nearest
+    /// supported ancestor, or — for a base language that is source-only — its
+    /// preferred regional target. `PT-PT` becomes `PT` when DeepL reads it, and
+    /// `PT` becomes `PT-PT` when DeepL writes it.
+    pub fn resolve(self, provider: Provider, role: Role) -> Option<Language> {
+        let mut candidate = Some(self);
+        while let Some(language) = candidate {
+            if language.is_supported_by(provider, role) {
+                return Some(language);
+            }
+            candidate = language.fallback();
         }
+
+        if role == Role::Target {
+            if let Some(variant) = self.preferred_target() {
+                return variant.resolve(provider, role);
+            }
+        }
+
+        None
     }
 
-    /// Lowercase code used in the TranslateGemma prompt.
-    pub fn ollama_source_code(self) -> &'static str {
-        match self {
-            Self::Portuguese
-            | Self::PortuguesePortugal
-            | Self::PortugueseBrazil
-            | Self::PortugueseAngola
-            | Self::PortugueseAzores => "pt",
-            Self::English => "en",
-            Self::Spanish
-            | Self::SpanishArgentina
-            | Self::SpanishColombia
-            | Self::SpanishMexico => "es",
-        }
-    }
-
-    /// Lowercase target code used in the TranslateGemma prompt.
-    pub fn ollama_target_code(self) -> &'static str {
-        match self {
-            Self::Portuguese | Self::PortuguesePortugal => "pt-PT",
-            Self::PortugueseBrazil => "pt-BR",
-            Self::PortugueseAngola => "pt-AO",
-            // ISO 3166-2:PT-20, the Azores as a Portuguese subdivision.
-            Self::PortugueseAzores => "pt-20",
-            Self::English => "en",
-            Self::Spanish => "es",
-            Self::SpanishArgentina => "es-AR",
-            Self::SpanishColombia => "es-CO",
-            Self::SpanishMexico => "es-MX",
+    /// The DeepL code for this language in a role, if DeepL supports it directly.
+    pub fn deepl_code(self, role: Role) -> Option<&'static str> {
+        match role {
+            Role::Source => self.info().deepl_source,
+            Role::Target => self.info().deepl_target,
         }
     }
 }
 
-pub const SOURCE_LANGUAGES: &[Language] =
-    &[Language::Portuguese, Language::English, Language::Spanish];
+/// Every language in the catalogue, in menu order: alphabetical by label, so a
+/// language's regional variants sit directly under it.
+pub fn all_languages() -> Vec<Language> {
+    let mut languages: Vec<Language> = CATALOGUE.iter().map(|entry| entry.language).collect();
+    languages.sort_by_key(|language| language.label());
+    languages
+}
 
-pub const TARGET_LANGUAGES: &[Language] = &[
-    Language::English,
-    Language::PortuguesePortugal,
-    Language::PortugueseBrazil,
-    Language::PortugueseAngola,
-    Language::PortugueseAzores,
-    Language::SpanishArgentina,
-    Language::SpanishColombia,
-    Language::SpanishMexico,
-    Language::Spanish,
-];
+/// Every language the provider can use in `role`, in menu order.
+pub fn languages_for(provider: Provider, role: Role) -> Vec<Language> {
+    all_languages()
+        .into_iter()
+        .filter(|language| language.is_supported_by(provider, role))
+        .collect()
+}
+
+/// Targets a provider can produce for `source`, excluding the source itself.
+pub fn allowed_targets_for(provider: Provider, source: Language) -> Vec<Language> {
+    languages_for(provider, Role::Target)
+        .into_iter()
+        .filter(|target| *target != source)
+        .collect()
+}
+
+/// Whether the pair can be translated by this provider after fallbacks.
+pub fn is_supported_pair(provider: Provider, source: Language, target: Language) -> bool {
+    source.resolve(provider, Role::Source).is_some()
+        && target.resolve(provider, Role::Target).is_some()
+}
+
+/// Pick the target that should follow a newly chosen source language.
+pub fn target_for_source_with(
+    provider: Provider,
+    source: Language,
+    current_target: Language,
+) -> Language {
+    let allowed = allowed_targets_for(provider, source);
+    if allowed.contains(&current_target) {
+        current_target
+    } else {
+        allowed.first().copied().unwrap_or(current_target)
+    }
+}
+
+/// Swap direction, resolving each end for the provider. `EN → PT-PT` becomes
+/// `EN → PT` in reverse because DeepL has no regional source language.
+pub fn swap_pair(provider: Provider, pair: LangPair) -> Option<LangPair> {
+    let source = pair.target.resolve(provider, Role::Source)?;
+    let target = pair.source.resolve(provider, Role::Target)?;
+    Some(LangPair { source, target })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LangPair {
@@ -149,287 +361,169 @@ impl Default for LangPair {
     }
 }
 
-/// The pairs this build exposes. DeepL supports far more; this app
-/// deliberately ships a curated set.
-pub const SUPPORTED_PAIRS: &[(Language, Language)] = &[
-    (Language::Portuguese, Language::English),
-    (Language::English, Language::PortuguesePortugal),
-    (Language::English, Language::PortugueseBrazil),
-    (Language::English, Language::PortugueseAngola),
-    (Language::English, Language::PortugueseAzores),
-    (Language::English, Language::SpanishArgentina),
-    (Language::English, Language::SpanishColombia),
-    (Language::English, Language::SpanishMexico),
-    (Language::English, Language::Spanish),
-    (Language::Spanish, Language::English),
-];
-
-pub fn is_supported_pair(source: Language, target: Language) -> bool {
-    SUPPORTED_PAIRS
-        .iter()
-        .any(|(supported_source, supported_target)| {
-            *supported_source == source && *supported_target == target
-        })
-}
-
-pub fn allowed_targets(source: Language) -> &'static [Language] {
-    match source {
-        Language::Portuguese => &[Language::English],
-        Language::English => &[
-            Language::PortuguesePortugal,
-            Language::PortugueseBrazil,
-            Language::Spanish,
-        ],
-        Language::Spanish => &[Language::English],
-        Language::PortuguesePortugal
-        | Language::PortugueseBrazil
-        | Language::PortugueseAngola
-        | Language::PortugueseAzores
-        | Language::SpanishArgentina
-        | Language::SpanishColombia
-        | Language::SpanishMexico => &[],
-    }
-}
-
-/// Targets a specific provider can produce. Angolan and Azorean Portuguese and
-/// regional Spanish are only available through Ollama, because DeepL has no such
-/// target languages.
-pub fn allowed_targets_for(provider: Provider, source: Language) -> &'static [Language] {
-    match provider {
-        Provider::DeepL => allowed_targets(source),
-        Provider::Ollama => match source {
-            Language::Portuguese => &[Language::English],
-            Language::English => &[
-                Language::PortuguesePortugal,
-                Language::PortugueseBrazil,
-                Language::PortugueseAngola,
-                Language::PortugueseAzores,
-                Language::Spanish,
-                Language::SpanishArgentina,
-                Language::SpanishColombia,
-                Language::SpanishMexico,
-            ],
-            Language::Spanish => &[Language::English],
-            Language::PortuguesePortugal
-            | Language::PortugueseBrazil
-            | Language::PortugueseAngola
-            | Language::PortugueseAzores
-            | Language::SpanishArgentina
-            | Language::SpanishColombia
-            | Language::SpanishMexico => &[],
-        },
-    }
-}
-
-/// Pick the target that should follow a newly chosen source language.
-pub fn target_for_source(source: Language, current_target: Language) -> Language {
-    let allowed = allowed_targets(source);
-    if allowed.contains(&current_target) {
-        current_target
-    } else {
-        allowed.first().copied().unwrap_or(current_target)
-    }
-}
-
-pub fn target_for_source_with(
-    provider: Provider,
-    source: Language,
-    current_target: Language,
-) -> Language {
-    let allowed = allowed_targets_for(provider, source);
-    if allowed.contains(&current_target) {
-        current_target
-    } else {
-        allowed.first().copied().unwrap_or(current_target)
-    }
-}
-
-/// Swap direction when the reverse is unambiguous. PT→EN has no single reverse
-/// (Portugal vs. Brazil), so it defaults to European Portuguese.
-pub fn swap_pair(pair: LangPair) -> Option<LangPair> {
-    if is_supported_pair(pair.target, pair.source) {
-        return Some(LangPair {
-            source: pair.target,
-            target: pair.source,
-        });
-    }
-    if pair.target == Language::English {
-        return Some(LangPair {
-            source: Language::English,
-            target: Language::PortuguesePortugal,
-        });
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn accepts_every_advertised_pair() {
-        for (source, target) in SUPPORTED_PAIRS {
-            assert!(is_supported_pair(*source, *target));
+    fn the_catalogue_is_unique_and_complete() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in CATALOGUE {
+            assert!(
+                seen.insert(entry.language),
+                "duplicate {:?}",
+                entry.language
+            );
+            let _ = entry.language.info();
+        }
+        assert_eq!(seen.len(), CATALOGUE.len());
+    }
+
+    #[test]
+    fn deepl_has_distinct_source_and_target_lists() {
+        let sources = languages_for(Provider::DeepL, Role::Source);
+        let targets = languages_for(Provider::DeepL, Role::Target);
+
+        assert_eq!(sources.len(), 114);
+        assert_eq!(targets.len(), 121);
+
+        // Portuguese and Chinese are read under their base code and written
+        // under a regional one.
+        assert!(sources.contains(&Language::Portuguese));
+        assert!(!targets.contains(&Language::Portuguese));
+        assert!(targets.contains(&Language::PortuguesePortugal));
+        assert!(targets.contains(&Language::PortugueseBrazil));
+        assert!(!sources.contains(&Language::PortugueseBrazil));
+
+        // English and Chinese follow the same rule; other languages keep their
+        // base code in both roles.
+        assert!(sources.contains(&Language::English));
+        assert!(targets.contains(&Language::English));
+        assert!(targets.contains(&Language::EnglishAmerican));
+
+        // The long tail is only in the newer list.
+        assert!(sources.contains(&Language::Acehnese));
+        assert!(targets.contains(&Language::Acehnese));
+    }
+
+    #[test]
+    fn gemma_offers_only_its_verified_set() {
+        let sources = languages_for(Provider::Ollama, Role::Source);
+
+        // The 55 verified languages: localisations are targets, not sources.
+        assert_eq!(sources.len(), 55);
+        assert!(sources.contains(&Language::Kannada));
+        assert!(sources.contains(&Language::English));
+        assert!(sources.contains(&Language::Portuguese));
+        assert!(!sources.contains(&Language::PortugueseBrazil));
+        assert!(!sources.contains(&Language::Acehnese));
+
+        // Every regional variant DeepL offers is a Gemma *target*, and resolves
+        // back to its base language when used as a source.
+        for variant in [
+            Language::PortuguesePortugal,
+            Language::PortugueseBrazil,
+            Language::EnglishBritish,
+            Language::EnglishAmerican,
+            Language::SpanishLatinAmerican,
+            Language::FrenchCanadian,
+            Language::GermanSwiss,
+            Language::ChineseSimplified,
+            Language::ChineseTraditional,
+        ] {
+            assert!(
+                !sources.contains(&variant),
+                "{variant:?} should not be a Gemma source"
+            );
+            assert_eq!(
+                variant.resolve(Provider::Ollama, Role::Target),
+                Some(variant),
+                "{variant:?} is not a Gemma target"
+            );
+        }
+
+        for language in sources {
+            assert!(language.gemma_code().is_some());
+            assert_eq!(
+                language.resolve(Provider::Ollama, Role::Target),
+                Some(language)
+            );
         }
     }
 
     #[test]
-    fn rejects_pairs_outside_the_curated_set() {
-        assert!(!is_supported_pair(
-            Language::Portuguese,
-            Language::PortugueseBrazil
-        ));
-        assert!(!is_supported_pair(Language::English, Language::English));
-        assert!(!is_supported_pair(
-            Language::Spanish,
-            Language::PortuguesePortugal
-        ));
-        assert!(!is_supported_pair(
-            Language::PortuguesePortugal,
-            Language::English
-        ));
+    fn regions_are_target_only_for_deepl_and_fall_back_to_the_base() {
+        assert_eq!(
+            Language::PortugueseBrazil.resolve(Provider::DeepL, Role::Source),
+            Some(Language::Portuguese)
+        );
+        assert_eq!(
+            Language::PortugueseBrazil.resolve(Provider::DeepL, Role::Target),
+            Some(Language::PortugueseBrazil)
+        );
+        assert_eq!(
+            Language::ChineseTraditional.resolve(Provider::DeepL, Role::Source),
+            Some(Language::Chinese)
+        );
+        assert_eq!(
+            Language::EnglishAmerican.resolve(Provider::Ollama, Role::Source),
+            Some(Language::English)
+        );
     }
 
     #[test]
-    fn swaps_ambiguous_portuguese_to_pt_pt() {
-        let swapped = swap_pair(LangPair {
+    fn swapping_degrades_the_region_away() {
+        let pair = LangPair {
+            source: Language::English,
+            target: Language::PortuguesePortugal,
+        };
+
+        let swapped = swap_pair(Provider::DeepL, pair).unwrap();
+        assert_eq!(swapped.source, Language::Portuguese);
+        assert_eq!(swapped.target, Language::English);
+
+        // Gemma offers the region as a target, but reads the base language.
+        let swapped = swap_pair(Provider::Ollama, pair).unwrap();
+        assert_eq!(swapped.source, Language::Portuguese);
+    }
+
+    #[test]
+    fn swapping_a_source_only_base_picks_its_regional_target() {
+        let pair = LangPair {
             source: Language::Portuguese,
             target: Language::English,
-        })
-        .unwrap();
-
+        };
+        let swapped = swap_pair(Provider::DeepL, pair).unwrap();
         assert_eq!(swapped.source, Language::English);
-        assert_eq!(swapped.target, Language::PortuguesePortugal);
-    }
+        // Brazilian Portuguese is the popular variant, so it wins the choice.
+        assert_eq!(swapped.target, Language::PortugueseBrazil);
 
-    #[test]
-    fn swaps_unambiguous_pairs_exactly() {
-        let swapped = swap_pair(LangPair {
-            source: Language::English,
-            target: Language::Spanish,
-        })
+        let pair = LangPair {
+            source: Language::Chinese,
+            target: Language::English,
+        };
+        let swapped = swap_pair(Provider::DeepL, pair).unwrap();
+        assert_eq!(swapped.target, Language::ChineseSimplified);
+
+        // Gemma also has regional targets, but the base is a valid one too.
+        let swapped = swap_pair(
+            Provider::Ollama,
+            LangPair {
+                source: Language::Portuguese,
+                target: Language::English,
+            },
+        )
         .unwrap();
-
-        assert_eq!(swapped.source, Language::Spanish);
-        assert_eq!(swapped.target, Language::English);
+        assert_eq!(swapped.target, Language::Portuguese);
     }
 
     #[test]
-    fn maps_languages_to_deepl_codes() {
-        assert_eq!(Language::Portuguese.code(), "PT");
-        assert_eq!(Language::English.code(), "EN");
-        assert_eq!(Language::Spanish.code(), "ES");
-        assert_eq!(Language::PortuguesePortugal.code(), "PT-PT");
-        assert_eq!(Language::PortugueseBrazil.code(), "PT-BR");
-        assert_eq!(Language::PortugueseAngola.code(), "PT-AO");
-        assert_eq!(Language::PortugueseAzores.code(), "PT-20");
-        assert_eq!(Language::SpanishArgentina.code(), "ES-AR");
-        assert_eq!(Language::SpanishColombia.code(), "ES-CO");
-        assert_eq!(Language::SpanishMexico.code(), "ES-MX");
-    }
-
-    #[test]
-    fn maps_languages_to_mcp_codes() {
-        assert_eq!(Language::Portuguese.mcp_source_code(), "PT");
-        assert_eq!(Language::English.mcp_source_code(), "EN");
-        assert_eq!(Language::Spanish.mcp_source_code(), "ES");
-        assert_eq!(Language::PortuguesePortugal.mcp_target_code(), "PT-PT");
-        assert_eq!(Language::PortugueseBrazil.mcp_target_code(), "PT-BR");
-        assert_eq!(Language::English.mcp_target_code(), "EN");
-        assert_eq!(Language::Spanish.mcp_target_code(), "ES");
-    }
-
-    #[test]
-    fn maps_languages_to_ollama_codes() {
-        assert_eq!(Language::Portuguese.ollama_source_code(), "pt");
-        assert_eq!(Language::English.ollama_source_code(), "en");
-        assert_eq!(Language::Spanish.ollama_source_code(), "es");
-        assert_eq!(Language::PortuguesePortugal.ollama_target_code(), "pt-PT");
-        assert_eq!(Language::PortugueseBrazil.ollama_target_code(), "pt-BR");
-        assert_eq!(Language::PortugueseAngola.ollama_target_code(), "pt-AO");
-        assert_eq!(Language::PortugueseAzores.ollama_target_code(), "pt-20");
-        assert_eq!(Language::English.ollama_target_code(), "en");
-        assert_eq!(Language::Spanish.ollama_target_code(), "es");
-        assert_eq!(Language::SpanishArgentina.ollama_target_code(), "es-AR");
-        assert_eq!(Language::SpanishColombia.ollama_target_code(), "es-CO");
-        assert_eq!(Language::SpanishMexico.ollama_target_code(), "es-MX");
-    }
-
-    #[test]
-    fn angolan_portuguese_is_ollama_only() {
-        assert!(!allowed_targets(Language::English).contains(&Language::PortugueseAngola));
-        assert!(allowed_targets_for(Provider::DeepL, Language::English)
-            .contains(&Language::PortugueseBrazil));
-        assert!(!allowed_targets_for(Provider::DeepL, Language::English)
-            .contains(&Language::PortugueseAngola));
-        assert!(allowed_targets_for(Provider::Ollama, Language::English)
-            .contains(&Language::PortugueseAngola));
-        assert!(is_supported_pair(
+    fn changing_the_source_retargets_to_something_the_provider_offers() {
+        let target = target_for_source_with(
+            Provider::DeepL,
             Language::English,
-            Language::PortugueseAngola
-        ));
-    }
-
-    #[test]
-    fn regional_spanish_is_ollama_only() {
-        for regional in [
-            Language::SpanishArgentina,
-            Language::SpanishColombia,
-            Language::SpanishMexico,
-        ] {
-            assert!(!allowed_targets(Language::English).contains(&regional));
-            assert!(!allowed_targets_for(Provider::DeepL, Language::English).contains(&regional));
-            assert!(allowed_targets_for(Provider::Ollama, Language::English).contains(&regional));
-            assert!(is_supported_pair(Language::English, regional));
-        }
-    }
-
-    #[test]
-    fn azorean_portuguese_is_ollama_only() {
-        assert!(!allowed_targets(Language::English).contains(&Language::PortugueseAzores));
-        assert!(!allowed_targets_for(Provider::DeepL, Language::English)
-            .contains(&Language::PortugueseAzores));
-        assert!(allowed_targets_for(Provider::Ollama, Language::English)
-            .contains(&Language::PortugueseAzores));
-        assert!(is_supported_pair(
-            Language::English,
-            Language::PortugueseAzores
-        ));
-    }
-
-    #[test]
-    fn provider_specific_target_fallback() {
-        assert_eq!(
-            target_for_source_with(
-                Provider::Ollama,
-                Language::English,
-                Language::PortugueseAngola
-            ),
-            Language::PortugueseAngola
+            Language::ChineseTraditional,
         );
-        assert_eq!(
-            target_for_source_with(
-                Provider::DeepL,
-                Language::English,
-                Language::PortugueseAngola
-            ),
-            Language::PortuguesePortugal
-        );
-    }
-
-    #[test]
-    fn adjusts_target_when_source_changes() {
-        assert_eq!(
-            target_for_source(Language::English, Language::English),
-            Language::PortuguesePortugal
-        );
-        assert_eq!(
-            target_for_source(Language::Spanish, Language::English),
-            Language::English
-        );
-        assert_eq!(
-            target_for_source(Language::English, Language::Spanish),
-            Language::Spanish
-        );
+        assert!(target.is_supported_by(Provider::DeepL, Role::Target));
     }
 }

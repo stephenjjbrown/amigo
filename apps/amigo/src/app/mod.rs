@@ -24,9 +24,7 @@ pub use state::{AppEvent, AppState, SlotOutcome};
 
 use deepl_core::config::ProviderSlot;
 use deepl_core::diff::{self, DiffOp};
-use deepl_core::{
-    allowed_targets_for, Language, Provider, MAX_TRANSLATION_CHARS, SOURCE_LANGUAGES,
-};
+use deepl_core::{Language, Provider, Role, MAX_TRANSLATION_CHARS};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -34,14 +32,12 @@ use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::WindowHandle;
-use gpui_kit::{
-    div, px, AnyElement, Context, Div, Entity, IntoElement, SharedString, Subscription, Window,
-};
+use gpui_kit::{div, px, Context, Div, Entity, IntoElement, SharedString, Subscription, Window};
 
 use crate::format::{slot_subtitle, slot_title};
 use crate::provider;
 use crate::settings;
-use crate::theme::{Palette, CONTROL_HEIGHT, TYPE};
+use crate::theme::{Palette, CONTROL_HEIGHT, RADIUS, TYPE};
 use crate::ui;
 
 gpui_kit::actions!(amigo, [TranslateAction, OpenSettingsAction]);
@@ -56,6 +52,8 @@ pub struct AmigoApp {
     settings_window: Option<WindowHandle<settings::SettingsView>>,
     /// The provider dialog, if open.
     provider_window: Option<WindowHandle<provider::ProviderDialog>>,
+    /// Which language menu (if any) is open under the top bar.
+    open_language_menu: Option<Role>,
     /// Kept alive so the state subscription stays active.
     _subscriptions: Vec<Subscription>,
 }
@@ -85,6 +83,7 @@ impl AmigoApp {
             source,
             settings_window: None,
             provider_window: None,
+            open_language_menu: None,
             _subscriptions: subscriptions,
         }
     }
@@ -112,13 +111,12 @@ impl AmigoApp {
     fn language_controls(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
         let (kind, pair) = {
             let state = self.state.read(cx);
-            (state.selected_provider(), state.selected_pair())
+            (
+                state.selected_provider(),
+                state.selected_pair().unwrap_or_default(),
+            )
         };
         let enabled = kind.is_some();
-        let kind = kind.unwrap_or(Provider::DeepL);
-        let pair = pair.unwrap_or_default();
-
-        let targets: Vec<Language> = allowed_targets_for(kind, pair.source).to_vec();
 
         let swap = ui::circle_icon_button(
             "swap-languages",
@@ -142,75 +140,161 @@ impl AmigoApp {
             .child(ui::section_label("FROM", palette))
             .child(self.language_picker(
                 "source-language",
-                170.0,
+                Role::Source,
                 pair.source,
-                SOURCE_LANGUAGES,
                 enabled,
-                AppState::set_source_language,
                 palette,
+                cx,
             ))
             .child(swap)
             .child(ui::section_label("TO", palette))
             .child(self.language_picker(
                 "target-language",
-                170.0,
+                Role::Target,
                 pair.target,
-                &targets,
                 enabled,
-                AppState::set_target_language,
                 palette,
+                cx,
             ))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// A picker button: it does not build a menu, it opens the meganav under the
+    /// top bar, which has room for a hundred languages.
     fn language_picker(
-        &self,
+        &mut self,
         id: &str,
-        width: f32,
+        role: Role,
         selected: Language,
-        options: &[Language],
         enabled: bool,
-        apply: fn(&mut AppState, Language, &mut Context<AppState>),
         palette: &Palette,
-    ) -> AnyElement {
-        let state = self.state.clone();
-        let labels: Vec<(Language, String)> = options
-            .iter()
-            .map(|language| (*language, language.label().to_string()))
-            .collect();
-
+        cx: &mut Context<Self>,
+    ) -> Button {
         let button = Button::new(SharedString::from(id))
             .small()
-            .w(px(width))
+            .w(px(170.))
             .h(px(CONTROL_HEIGHT))
             .dropdown_caret(true)
             .label(SharedString::from(selected.label()));
 
         if !enabled {
-            return button
-                .disabled(true)
-                .text_color(palette.text_faint)
-                .into_any_element();
+            return button.disabled(true).text_color(palette.text_faint);
         }
 
         button
             .text_color(palette.text)
-            .dropdown_menu(move |menu, _window, _cx| {
-                let mut menu = menu;
-                for (language, label) in &labels {
-                    let language = *language;
-                    let state = state.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(label.clone())
-                            .checked(language == selected)
-                            .on_click(move |_, _window, cx| {
-                                state.update(cx, |state, cx| apply(state, language, cx));
-                            }),
-                    );
-                }
-                menu
-            })
-            .into_any_element()
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                this.open_language_menu = if this.open_language_menu == Some(role) {
+                    None
+                } else {
+                    Some(role)
+                };
+                cx.notify();
+            }))
+    }
+
+    /// The multi-column language panel: every option in a scrollable grid, so a
+    /// hundred languages are browsable without a metre-long menu.
+    fn language_meganav(
+        &mut self,
+        role: Role,
+        options: &[Language],
+        selected: Language,
+        palette: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let palette = *palette;
+        let apply = match role {
+            Role::Source => AppState::set_source_language,
+            Role::Target => AppState::set_target_language,
+        };
+        let prefix = match role {
+            Role::Source => "source",
+            Role::Target => "target",
+        };
+        let state = self.state.clone();
+
+        // Columns fill top to bottom, then left to right: four stacks side by
+        // side, each read downwards.
+        let column_count = 4usize;
+        let row_count = options.len().div_ceil(column_count);
+        let mut grid = div().flex().items_start().gap(px(1.));
+        for column in 0..column_count {
+            let mut stack = div().flex().flex_col().gap(px(1.)).flex_1().min_w(px(0.));
+
+            for row in 0..row_count {
+                let Some(language) = options.get(column * row_count + row).copied() else {
+                    continue;
+                };
+                let state = state.clone();
+                let is_selected = language == selected;
+
+                stack = stack.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "{prefix}-lang-{}",
+                            language.code()
+                        )))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .h(px(26.))
+                        .px(px(8.))
+                        .rounded(px(RADIUS.sm))
+                        .cursor_pointer()
+                        .text_size(px(TYPE.small))
+                        .text_color(if is_selected {
+                            palette.text
+                        } else {
+                            palette.text_secondary
+                        })
+                        .when(is_selected, |this| this.bg(palette.surface_strong))
+                        .when(!is_selected, |this| {
+                            this.hover(move |style| {
+                                style.bg(palette.surface_muted).text_color(palette.text)
+                            })
+                        })
+                        .child(SharedString::from(language.label()))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            state.update(cx, |state, cx| apply(state, language, cx));
+                            this.open_language_menu = None;
+                            cx.notify();
+                        })),
+                );
+            }
+
+            grid = grid.child(stack);
+        }
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .w_full()
+            .mt(px(56.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .bg(palette.surface)
+            .border_1()
+            .border_color(palette.border)
+            .p(px(14.))
+            .child(ui::section_label(
+                match role {
+                    Role::Source => "SOURCE LANGUAGE",
+                    Role::Target => "TARGET LANGUAGE",
+                },
+                &palette,
+            ))
+            .child(
+                div()
+                    .id("language-meganav")
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .max_h(px(360.))
+                    .overflow_y_scroll()
+                    .child(grid),
+            )
     }
 
     fn top_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> Div {
@@ -433,7 +517,15 @@ impl AmigoApp {
                 .collect()
         };
 
-        div().flex().flex_col().gap(px(8.)).children(rows)
+        // One rule between samples, so a list of variants reads as a list.
+        let mut list = div().flex().flex_col().gap(px(8.));
+        for (index, row) in rows.into_iter().enumerate() {
+            if index > 0 {
+                list = list.child(ui::hairline(palette));
+            }
+            list = list.child(row);
+        }
+        list
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -670,7 +762,29 @@ impl Render for AmigoApp {
         let palette = Palette::for_appearance(window.appearance());
         let global_error = self.state.read(cx).global_error().map(str::to_string);
 
+        // The language meganav is an overlay, so it is built before the tree and
+        // stacked after the page content.
+        let meganav = self.open_language_menu.map(|role| {
+            let (pair, options) = {
+                let state = self.state.read(cx);
+                (
+                    state.selected_pair().unwrap_or_default(),
+                    match role {
+                        Role::Source => state.source_languages(),
+                        Role::Target => state.target_languages(),
+                    },
+                )
+            };
+            let selected = match role {
+                Role::Source => pair.source,
+                Role::Target => pair.target,
+            };
+            self.language_meganav(role, &options, selected, &palette, cx)
+        });
+        let menu_open = self.open_language_menu.is_some();
+
         ui::window_root(&palette)
+            .relative()
             .px(px(24.))
             .py(px(18.))
             .gap(px(8.))
@@ -709,5 +823,18 @@ impl Render for AmigoApp {
                 ))
             })
             .child(self.action_bar(&palette, cx))
+            .when(menu_open, |this| {
+                this.child(
+                    div()
+                        .id("language-menu-backdrop")
+                        .absolute()
+                        .size_full()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.open_language_menu = None;
+                            cx.notify();
+                        })),
+                )
+            })
+            .when_some(meganav, |this, meganav| this.child(meganav))
     }
 }

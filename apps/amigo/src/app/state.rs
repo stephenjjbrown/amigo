@@ -13,8 +13,8 @@ use std::collections::HashMap;
 
 use deepl_core::config::{Preferences, ProviderSlot};
 use deepl_core::{
-    swap_pair, target_for_source_with, LangPair, Language, OllamaModel, OllamaStatus, Provider,
-    SessionStatus, MAX_PARALLEL_LIMIT,
+    allowed_targets_for, languages_for, swap_pair, target_for_source_with, LangPair, Language,
+    OllamaModel, OllamaStatus, Provider, Role, SessionStatus, MAX_PARALLEL_LIMIT,
 };
 use deepl_engine::{Command, Engine, Event, ProviderJob};
 use gpui_kit::{ClipboardItem, Context, EventEmitter};
@@ -263,6 +263,33 @@ impl AppState {
         self.selected_slot().map(|slot| slot.pair)
     }
 
+    /// The languages the FROM menu offers: what the selected provider reads,
+    /// minus anything switched off in Settings.
+    pub fn source_languages(&self) -> Vec<Language> {
+        let Some(kind) = self.selected_provider() else {
+            return Vec::new();
+        };
+        languages_for(kind, Role::Source)
+            .into_iter()
+            .filter(|language| self.prefs.language_enabled(*language))
+            .collect()
+    }
+
+    /// The languages the TO menu offers: what the selected provider can produce
+    /// from the current source, minus anything switched off in Settings.
+    pub fn target_languages(&self) -> Vec<Language> {
+        let Some(kind) = self.selected_provider() else {
+            return Vec::new();
+        };
+        let Some(source) = self.selected_slot().map(|slot| slot.pair.source) else {
+            return Vec::new();
+        };
+        allowed_targets_for(kind, source)
+            .into_iter()
+            .filter(|language| self.prefs.language_enabled(*language))
+            .collect()
+    }
+
     /// Whether a slot can actually translate right now: DeepL needs a session,
     /// Ollama needs its model available.
     pub fn slot_configured(&self, slot: &ProviderSlot) -> bool {
@@ -460,45 +487,56 @@ impl AppState {
         cx.notify();
     }
 
-    /// Edit the pair of the selected provider, which is what the language
-    /// controls in the top bar drive. Changing the pair invalidates that
-    /// provider's result, so it is dropped.
-    fn edit_pair(
-        &mut self,
-        cx: &mut Context<Self>,
-        edit: impl FnOnce(&mut ProviderSlot, Provider),
-    ) {
+    /// Store `pair` on every provider and drop the results it invalidates.
+    fn set_pair_everywhere(&mut self, pair: LangPair, cx: &mut Context<Self>) {
         let Some(kind) = self.selected_provider() else {
             return;
         };
-        let Some(mut slot) = self.prefs.slot(kind).cloned() else {
-            return;
-        };
 
-        edit(&mut slot, kind);
-        self.prefs.set_slot(slot);
-        self.outcomes.remove(&kind);
+        self.prefs.set_pair_everywhere(kind, pair);
+        for provider in Provider::ALL {
+            self.outcomes.remove(&provider);
+        }
         self.prefs.save();
         cx.notify();
     }
 
     pub fn set_source_language(&mut self, language: Language, cx: &mut Context<Self>) {
-        self.edit_pair(cx, |slot, kind| {
-            slot.pair.source = language;
-            slot.pair.target = target_for_source_with(kind, language, slot.pair.target);
-        });
+        let Some(mut pair) = self.selected_pair() else {
+            return;
+        };
+        pair.source = language;
+        if pair.target == pair.source {
+            let kind = self.selected_provider().expect("a pair implies a provider");
+            pair.target = target_for_source_with(kind, pair.source, pair.target);
+        }
+        self.set_pair_everywhere(pair, cx);
     }
 
     pub fn set_target_language(&mut self, language: Language, cx: &mut Context<Self>) {
-        self.edit_pair(cx, |slot, _| slot.pair.target = language);
+        let Some(mut pair) = self.selected_pair() else {
+            return;
+        };
+        pair.target = language;
+        self.set_pair_everywhere(pair, cx);
     }
 
     pub fn swap_languages(&mut self, cx: &mut Context<Self>) {
-        self.edit_pair(cx, |slot, _| {
-            if let Some(swapped) = swap_pair(slot.pair) {
-                slot.pair = swapped;
-            }
-        });
+        let Some(kind) = self.selected_provider() else {
+            return;
+        };
+        let Some(pair) = self.selected_pair() else {
+            return;
+        };
+        if let Some(swapped) = swap_pair(kind, pair) {
+            self.set_pair_everywhere(swapped, cx);
+        }
+    }
+
+    pub fn toggle_language(&mut self, language: Language, enabled: bool, cx: &mut Context<Self>) {
+        self.prefs.set_language_enabled(language, enabled);
+        self.prefs.save();
+        cx.notify();
     }
 
     pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
@@ -541,14 +579,25 @@ impl AppState {
     // ----- Internals -----------------------------------------------------
 
     fn job_for(&self, slot: &ProviderSlot) -> ProviderJob {
-        match slot.kind {
-            Provider::DeepL => ProviderJob::DeepL {
-                source: slot.pair.source,
-                target: slot.pair.target,
-            },
+        let kind = slot.kind;
+        // A stored pair can name a regional variant its provider lacks; resolve
+        // each end to the nearest language the provider actually takes.
+        let source = slot
+            .pair
+            .source
+            .resolve(kind, Role::Source)
+            .unwrap_or(slot.pair.source);
+        let target = slot
+            .pair
+            .target
+            .resolve(kind, Role::Target)
+            .unwrap_or(slot.pair.target);
+
+        match kind {
+            Provider::DeepL => ProviderJob::DeepL { source, target },
             Provider::Ollama => ProviderJob::Ollama {
-                source: slot.pair.source,
-                target: slot.pair.target,
+                source,
+                target,
                 model: slot.model.id().to_string(),
                 register: slot.register,
                 context: slot.context().map(str::to_string),

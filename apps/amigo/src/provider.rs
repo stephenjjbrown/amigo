@@ -196,6 +196,7 @@ impl ProviderDialog {
                         };
                         let _ = weak.update(cx, |dialog, cx| {
                             dialog.draft.mode = next;
+                            dialog.draft.enforce_model_for_mode();
                             cx.notify();
                         });
                     }
@@ -286,6 +287,8 @@ impl ProviderDialog {
         let status = self.state.read(cx).ollama();
         OllamaModel::ALL
             .iter()
+            // Local models are single-translation only.
+            .filter(|model| self.draft.mode == TranslationMode::Single || model.is_cloud())
             .map(|model| {
                 (
                     *model,

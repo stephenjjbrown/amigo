@@ -37,8 +37,8 @@ impl super::AmigoApp {
             cx,
             self.settings_window.as_ref(),
             "Settings".to_string(),
-            (480.0, 620.0),
-            (420.0, 560.0),
+            (560.0, 640.0),
+            (480.0, 560.0),
             |app, handle| app.settings_window = Some(handle),
             settings::SettingsView::new,
         );

@@ -324,7 +324,7 @@ impl Worker {
         source: Language,
         target: Language,
     ) -> Result<Translation, ApiError> {
-        validate_request(text, source, target)?;
+        validate_request(Provider::DeepL, text, source, target)?;
 
         let refresh = {
             let session = self.session.as_mut().ok_or_else(|| {
@@ -398,7 +398,7 @@ impl Worker {
         count: usize,
         parallel: usize,
     ) -> Result<Vec<Translation>, ApiError> {
-        validate_request(text, source, target)?;
+        validate_request(Provider::Ollama, text, source, target)?;
 
         let client = OllamaClient::new(model)?;
         client.translate_variants(
@@ -421,12 +421,17 @@ impl Worker {
     }
 }
 
-fn validate_request(text: &str, source: Language, target: Language) -> Result<(), ApiError> {
+fn validate_request(
+    provider: Provider,
+    text: &str,
+    source: Language,
+    target: Language,
+) -> Result<(), ApiError> {
     if text.trim().is_empty() {
         return Err(ApiError::input("There is no text to translate."));
     }
 
-    if !is_supported_pair(source, target) {
+    if !is_supported_pair(provider, source, target) {
         return Err(ApiError::input(
             "That language pair is not supported by this version of the app.",
         ));

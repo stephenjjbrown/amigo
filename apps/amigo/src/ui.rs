@@ -46,6 +46,11 @@ pub fn hairline(palette: &Palette) -> Div {
     div().h(px(1.)).w_full().flex_none().bg(palette.border)
 }
 
+/// A vertical rule, for separating panes laid out in a row.
+pub fn vertical_hairline(palette: &Palette) -> Div {
+    div().w(px(1.)).flex_none().bg(palette.border)
+}
+
 /// Upper-case section label, the app's "PRESET" / "FROM" voice.
 pub fn section_label(text: &str, palette: &Palette) -> Div {
     div()

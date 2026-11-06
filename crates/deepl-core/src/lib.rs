@@ -19,8 +19,8 @@ pub use ollama::{
     MAX_VARIANTS, OLLAMA_BASE_URL, OLLAMA_CHAT_URL, OLLAMA_TAGS_URL,
 };
 pub use pairs::{
-    allowed_targets, allowed_targets_for, is_supported_pair, swap_pair, target_for_source,
-    target_for_source_with, LangPair, Language, MAX_TEXT_CHARS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
+    all_languages, allowed_targets_for, is_supported_pair, languages_for, swap_pair,
+    target_for_source_with, LangPair, Language, LanguageDef, Role, CATALOGUE, MAX_TEXT_CHARS,
 };
 pub use provider::{Provider, MAX_TRANSLATION_CHARS};
 pub use types::{KeyOrigin, KeyStatus};
