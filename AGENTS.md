@@ -56,6 +56,12 @@ time to discover, so they don't have to be rediscovered.
   rather than layering a second hover on a shared recipe.
 - `Theme::update(cx, |theme| ...)` is what reconciles the theme's derived
   tokens with `theme.colors`. Assigning through `Theme::global_mut` skips that.
+- **macOS needs two platform hooks we do not get for free.** `Application::on_reopen`
+  (on `Application`, not `App`) recreates the main window when the dock icon is
+  clicked after the window was closed — without it the app keeps running with no
+  window and no way back. `App::set_menus` must be called or the menu bar shows
+  an empty app menu that does nothing; the items dispatch as actions, and
+  `App::on_action` handles them even when no window is open.
 - **Reacting: `notify` is the whole mechanism.** GPUI records which entities a
   view reads while rendering and repaints that view when any of them notifies.
   So a view needs **no `cx.observe` merely to stay current** — an open Settings
