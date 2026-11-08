@@ -232,7 +232,7 @@ impl AmigoApp {
                     div()
                         .id(SharedString::from(format!(
                             "{prefix}-lang-{}",
-                            language.code()
+                            language.id()
                         )))
                         .w_full()
                         .flex()

@@ -214,7 +214,7 @@ impl SettingsView {
             )
             .child(ui::text(note, TYPE.micro, palette.text_faint))
             .child(
-                Switch::new(SharedString::from(format!("language-{}", language.code())))
+                Switch::new(SharedString::from(format!("language-{}", language.id())))
                     .checked(enabled)
                     .on_change(cx.listener(move |this, checked, _window, cx| {
                         let value = *checked;

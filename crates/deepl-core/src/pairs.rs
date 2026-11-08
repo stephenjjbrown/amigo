@@ -44,6 +44,15 @@ macro_rules! catalogue {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum Language { $($variant),* }
 
+        impl Language {
+            /// Stable, unique identifier for this language: its variant name.
+            /// Codes can repeat (`ES` is both the source and the Spain target),
+            /// element ids cannot.
+            pub fn id(self) -> &'static str {
+                match self { $(Self::$variant => stringify!($variant)),* }
+            }
+        }
+
         pub const CATALOGUE: &[LanguageDef] = &[
             $(LanguageDef {
                 language: Language::$variant,
@@ -387,12 +396,16 @@ mod tests {
     #[test]
     fn the_catalogue_is_unique_and_complete() {
         let mut seen = std::collections::HashSet::new();
+        let mut ids = std::collections::HashSet::new();
         for entry in CATALOGUE {
             assert!(
                 seen.insert(entry.language),
                 "duplicate {:?}",
                 entry.language
             );
+            // Element ids come from `id()`, so it must be unique even where a
+            // code is shared by a source and its home target (ES, DE, FR).
+            assert!(ids.insert(entry.language.id()), "duplicate id");
             let _ = entry.language.info();
         }
         assert_eq!(seen.len(), CATALOGUE.len());
