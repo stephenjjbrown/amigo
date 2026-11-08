@@ -97,16 +97,16 @@ catalogue! {
     Czech, "Czech", "CS", "cs", none, "CS", "CS";
     Welsh, "Welsh", "CY", "cy", none, "CY", "CY";
     Danish, "Danish", "DA", "da", none, "DA", "DA";
-    German, "German", "DE", "de", none, "DE", "DE";
+    German, "German", "DE", "de", none, "DE", none;
     Greek, "Greek", "EL", "el", none, "EL", "EL";
-    English, "English", "EN", "en", none, "EN", "EN";
+    English, "English", "EN", "en", none, "EN", none;
     Esperanto, "Esperanto", "EO", none, none, "EO", "EO";
-    Spanish, "Spanish", "ES", "es", none, "ES", "ES";
+    Spanish, "Spanish", "ES", "es", none, "ES", none;
     Estonian, "Estonian", "ET", "et", none, "ET", "ET";
     Basque, "Basque", "EU", none, none, "EU", "EU";
     Persian, "Persian", "FA", "fa", none, "FA", "FA";
     Finnish, "Finnish", "FI", "fi", none, "FI", "FI";
-    French, "French", "FR", "fr", none, "FR", "FR";
+    French, "French", "FR", "fr", none, "FR", none;
     Irish, "Irish", "GA", none, none, "GA", "GA";
     Galician, "Galician", "GL", "gl", none, "GL", "GL";
     Guarani, "Guarani", "GN", none, none, "GN", "GN";
@@ -192,10 +192,18 @@ catalogue! {
     Chinese, "Chinese (Simplified)", "ZH", "zh", none, "ZH", none;
     Zulu, "Zulu", "ZU", none, none, "ZU", "ZU";
     GermanSwiss, "German (Swiss)", "DE-CH", "de-CH", German, none, "DE-CH";
+    GermanGermany, "German (Germany)", "DE", "de-DE", German, none, "DE";
     EnglishBritish, "English (British)", "EN-GB", "en-GB", English, none, "EN-GB";
     EnglishAmerican, "English (American)", "EN-US", "en-US", English, none, "EN-US";
     SpanishLatinAmerican, "Spanish (Latin American)", "ES-419", "es-419", Spanish, none, "ES-419";
+    // DeepL's bare `ES` target is Spain Spanish (its docs list `ES` and `ES-ES`
+    // under the same name, and only `ES` is offered for translation). It is a
+    // separate entry from `Spanish` because the base must stay a source-only
+    // language: a base can be read generically but resolves to Latin America
+    // when a *default* target is needed, while Spain is chosen explicitly.
+    SpanishSpain, "Spanish (Spain)", "ES", "es-ES", Spanish, none, "ES";
     FrenchCanadian, "French (Canadian)", "FR-CA", "fr-CA", French, none, "FR-CA";
+    FrenchFrance, "French (France)", "FR", "fr-FR", French, none, "FR";
     PortugueseBrazil, "Portuguese (Brazilian)", "PT-BR", "pt-BR", Portuguese, none, "PT-BR";
     PortuguesePortugal, "Portuguese (European)", "PT-PT", "pt-PT", Portuguese, none, "PT-PT";
     ChineseSimplified, "Chinese (Simplified)", "ZH-HANS", "zh-Hans", Chinese, none, "ZH-HANS";
@@ -238,13 +246,20 @@ impl Language {
             // source falls back to its base language.
             Provider::Ollama => match role {
                 Role::Source => self.info().gemma.is_some() && self.info().fallback.is_none(),
-                Role::Target => self.info().gemma.is_some(),
+                // A localised language is written, not spoken: `English` is
+                // never a target, `English (American)` is.
+                Role::Target => self.info().gemma.is_some() && !self.has_variants(),
             },
             Provider::DeepL => match role {
                 Role::Source => self.info().deepl_source.is_some(),
                 Role::Target => self.info().deepl_target.is_some(),
             },
         }
+    }
+
+    /// Whether any catalogue entry is a localisation of this language.
+    fn has_variants(self) -> bool {
+        CATALOGUE.iter().any(|entry| entry.fallback == Some(self))
     }
 
     /// The regional variant to use when a base language is wanted as a target but
@@ -258,7 +273,10 @@ impl Language {
         match self {
             Language::English => Some(Language::EnglishAmerican),
             Language::Portuguese => Some(Language::PortugueseBrazil),
+            Language::Spanish => Some(Language::SpanishLatinAmerican),
             Language::Chinese => Some(Language::ChineseSimplified),
+            Language::German => Some(Language::GermanGermany),
+            Language::French => Some(Language::FrenchFrance),
             _ => None,
         }
     }
@@ -356,7 +374,8 @@ impl Default for LangPair {
     fn default() -> Self {
         Self {
             source: Language::Portuguese,
-            target: Language::English,
+            // Targets are localised, so the default says which English.
+            target: Language::EnglishAmerican,
         }
     }
 }
@@ -385,7 +404,7 @@ mod tests {
         let targets = languages_for(Provider::DeepL, Role::Target);
 
         assert_eq!(sources.len(), 114);
-        assert_eq!(targets.len(), 121);
+        assert_eq!(targets.len(), 120);
 
         // Portuguese and Chinese are read under their base code and written
         // under a regional one.
@@ -395,11 +414,15 @@ mod tests {
         assert!(targets.contains(&Language::PortugueseBrazil));
         assert!(!sources.contains(&Language::PortugueseBrazil));
 
-        // English and Chinese follow the same rule; other languages keep their
-        // base code in both roles.
+        // Localised languages are read under their base code and written under
+        // a localisation; the bare code is never a target.
         assert!(sources.contains(&Language::English));
-        assert!(targets.contains(&Language::English));
+        assert!(!targets.contains(&Language::English));
         assert!(targets.contains(&Language::EnglishAmerican));
+        assert!(targets.contains(&Language::EnglishBritish));
+        assert!(!targets.contains(&Language::Spanish));
+        assert!(targets.contains(&Language::SpanishSpain));
+        assert!(targets.contains(&Language::SpanishLatinAmerican));
 
         // The long tail is only in the newer list.
         assert!(sources.contains(&Language::Acehnese));
@@ -444,10 +467,8 @@ mod tests {
 
         for language in sources {
             assert!(language.gemma_code().is_some());
-            assert_eq!(
-                language.resolve(Provider::Ollama, Role::Target),
-                Some(language)
-            );
+            // A localised base resolves down to its default localisation.
+            assert!(language.resolve(Provider::Ollama, Role::Target).is_some());
         }
     }
 
@@ -480,11 +501,43 @@ mod tests {
 
         let swapped = swap_pair(Provider::DeepL, pair).unwrap();
         assert_eq!(swapped.source, Language::Portuguese);
-        assert_eq!(swapped.target, Language::English);
+        assert_eq!(swapped.target, Language::EnglishAmerican);
 
         // Gemma offers the region as a target, but reads the base language.
         let swapped = swap_pair(Provider::Ollama, pair).unwrap();
         assert_eq!(swapped.source, Language::Portuguese);
+    }
+
+    #[test]
+    fn resolution_walks_up_for_sources_and_down_for_targets() {
+        // Specific -> base: a region collapses to its base language when read.
+        assert_eq!(
+            Language::PortugueseBrazil.resolve(Provider::DeepL, Role::Source),
+            Some(Language::Portuguese)
+        );
+
+        // Base -> specific: a base that is not a target falls through to its most
+        // widely used variant.
+        assert_eq!(
+            Language::Portuguese.resolve(Provider::DeepL, Role::Target),
+            Some(Language::PortugueseBrazil)
+        );
+
+        // An exact target is never rewritten.
+        assert_eq!(
+            Language::PortugueseBrazil.resolve(Provider::DeepL, Role::Target),
+            Some(Language::PortugueseBrazil)
+        );
+        assert_eq!(
+            Language::PortuguesePortugal.resolve(Provider::DeepL, Role::Target),
+            Some(Language::PortuguesePortugal)
+        );
+
+        // Gemma localises targets the same way.
+        assert_eq!(
+            Language::Portuguese.resolve(Provider::Ollama, Role::Target),
+            Some(Language::PortugueseBrazil)
+        );
     }
 
     #[test]
@@ -505,7 +558,7 @@ mod tests {
         let swapped = swap_pair(Provider::DeepL, pair).unwrap();
         assert_eq!(swapped.target, Language::ChineseSimplified);
 
-        // Gemma also has regional targets, but the base is a valid one too.
+        // Gemma localises too, so the same choice is made there.
         let swapped = swap_pair(
             Provider::Ollama,
             LangPair {
@@ -514,7 +567,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(swapped.target, Language::Portuguese);
+        assert_eq!(swapped.target, Language::PortugueseBrazil);
     }
 
     #[test]

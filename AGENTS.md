@@ -153,7 +153,9 @@ crates/deepl-core/src/diff.rs    word-level diff used by the result cards
   is the 55 verified WMT24++ languages plus the same regional variants DeepL
   offers, not the large experimental tail the chat template also accepts.
   **Localisations are targets only** (a `fallback` marks a localisation): the
-  source side uses the base language, so `FR-CA` resolves to `FR` when read.
+  source side uses the base language, so `FR-CA` resolves to `FR` when read, and
+  a base that has localisations is not itself a target (see `preferred_target`
+  for the default: LatAm Spanish, American English, Brazilian Portuguese).
   Kurdish is not a variant but two distinct languages (`KMR`, `CKB`), which is
   why both can be sources. The docs MCP server
   (`https://developers.deepl.com/mcp`, unauthenticated) will serve the page

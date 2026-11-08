@@ -562,9 +562,10 @@ mod tests {
             prefs.slot(Provider::DeepL).unwrap().pair.source,
             Language::Portuguese
         );
+        // Targets are localised: `English` resolves to `English (American)`.
         assert_eq!(
             prefs.slot(Provider::DeepL).unwrap().pair.target,
-            Language::English
+            Language::EnglishAmerican
         );
     }
 

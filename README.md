@@ -103,9 +103,10 @@ and the coarser variant to fall back to.
 - **TranslateGemma** offers the 55 languages its model card benchmarks (the
   WMT24++ set) plus the same regional variants DeepL offers (Brazilian/European
   Portuguese, American/British English, Latin American Spanish, Canadian French,
-  Swiss German, both Chinese scripts) **as targets**. Localisations are never
-  offered as sources: the source side uses the base language, so `FR-CA` falls
-  back to `FR`. The much larger experimental tail the chat template accepts is
+  Swiss German, both Chinese scripts) **as targets**. A language with
+  localisations is never offered as a target itself — `English` gives way to
+  American/British, `Spanish` to Spain/Latin America — and localisations are never
+  sources, so `FR-CA` resolves to `FR` when read. The much larger experimental tail the chat template accepts is
   deliberately not offered.
 
 `Language::resolve` walks the fallback chain, so `PT-PT` as a source becomes `PT`
